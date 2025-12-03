@@ -1,4 +1,5 @@
-require("dotenv").config();
+require("dotenv").config({ override: true });
+console.log("LOAD ENV:", process.env.OPENAI_API_KEY ? "OK" : "NOT FOUND");
 const express = require("express");
 const cors = require("cors");
 
