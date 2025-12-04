@@ -10,7 +10,11 @@
 const { supabase, supabaseAdmin } = require("../utils/supabaseClient");
 
 /**
- * Создание нового пользователя
+ * Создание нового пользователя (email/password авторизация)
+ * 
+ * ПРИМЕЧАНИЕ: Для создания анонимных пользователей используйте authService.createAnonymousUser()
+ * Эта функция предназначена для будущей реализации email/password авторизации
+ * 
  * @param {string} email - Email пользователя
  * @param {string} passwordHash - Хеш пароля
  * @param {object} profileData - Дополнительные данные профиля

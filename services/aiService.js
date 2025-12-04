@@ -9,6 +9,12 @@
 
 const { supabaseAdmin } = require("../utils/supabaseClient");
 const openai = require("../utils/openaiClient");
+const userProfileService = require("./userProfileService");
+const userMetricsService = require("./userMetricsService");
+const workoutService = require("./workoutService");
+
+// Константа для анонимных пользователей в ai_logs
+const ANONYMOUS_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 /**
  * Логирование AI запроса
@@ -32,11 +38,14 @@ async function logAIRequest(userId, requestType, requestData, responseData) {
       };
     }
 
+    // Используем анонимного пользователя, если userId null
+    const logUserId = userId ?? ANONYMOUS_USER_ID;
+
     const { data, error } = await supabaseAdmin
       .from("ai_logs")
       .insert([
         {
-          user_id: userId,
+          user_id: logUserId,
           request_type: requestType,
           request_data: requestData,
           response_data: responseData,
@@ -136,6 +145,19 @@ async function getAIStats(userId) {
 }
 
 /**
+ * Парсинг reps из строки в INTEGER
+ * @param {string|number|null} value - Значение reps (может быть строкой "8-12" или числом)
+ * @returns {number|null} - Первое число из строки или число, или null
+ */
+function parseReps(value) {
+  if (!value) return null;
+  if (typeof value === "number") return value;
+
+  const match = String(value).match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/**
  * Генерация тренировки через OpenAI
  * @param {object} params - Параметры генерации тренировки
  * @param {string|null} params.userId - ID пользователя (опционально)
@@ -147,6 +169,7 @@ async function getAIStats(userId) {
  * @param {number} params.exercisesCount - Количество упражнений
  * @param {string} params.workoutType - Тип тренировки: 'strength' | 'hiit' | 'mobility' | 'full_body'
  * @param {object|null} params.profileData - Данные профиля пользователя
+ * @param {boolean} [params.ignoreHistory] - Игнорировать историю тренировок при генерации (по умолчанию false)
  * @returns {Promise<{data: object|null, error: object|null}>}
  */
 async function generateWorkout({
@@ -159,9 +182,87 @@ async function generateWorkout({
   exercisesCount = 8,
   workoutType,
   profileData = null,
+  ignoreHistory = false,
 }) {
   try {
-    // 1. Валидация входных параметров
+    // Сохраняем исходные параметры запроса для логирования
+    const originalParams = {
+      level: level || null,
+      equipment: equipment || [],
+      targetMuscles: targetMuscles || [],
+      goal: goal || null,
+      durationMinutes,
+      exercisesCount,
+      workoutType: workoutType || null,
+    };
+
+    // 1. Загрузка профиля пользователя, метрик тела и истории тренировок (если userId передан)
+    let userProfile = null;
+    let profileSnapshot = null;
+    let latestBodyMetric = null;
+    let recentSessions = [];
+
+    if (userId) {
+      // Загружаем профиль
+      const { data: profile, error: profileError } = await userProfileService.getUserProfile(userId);
+      if (profileError) {
+        // Логируем ошибку, но продолжаем работу без профиля (graceful degradation)
+        console.warn(`Failed to load user profile for userId ${userId}:`, profileError.message);
+      } else if (profile) {
+        userProfile = profile;
+        profileSnapshot = {
+          level: profile.level,
+          goal: profile.goal,
+          preferred_equipment: profile.preferred_equipment,
+          preferred_muscles: profile.preferred_muscles,
+          language: profile.language,
+          restrictions: profile.restrictions,
+          equipment_items: profile.equipment_items,
+          training_environment: profile.training_environment,
+          weight_kg: profile.weight_kg,
+          height_cm: profile.height_cm,
+        };
+      }
+
+      // Загружаем последнюю метрику тела
+      const { data: metric, error: metricError } = await userMetricsService.getLatestBodyMetric(userId);
+      if (metricError) {
+        console.warn(`Failed to load body metric for userId ${userId}:`, metricError.message);
+      } else if (metric) {
+        latestBodyMetric = metric;
+      }
+
+      // Загружаем историю тренировок (если не игнорируется)
+      if (!ignoreHistory) {
+        const { data: sessions, error: sessionsError } = await workoutService.getUserWorkoutSessions(userId, {
+          limit: 10,
+        });
+        if (sessionsError) {
+          console.warn(`Failed to load workout sessions for userId ${userId}:`, sessionsError.message);
+        } else if (sessions) {
+          recentSessions = sessions;
+        }
+      }
+    }
+
+    // 2. Обогащение параметров данными профиля (если они не переданы в запросе)
+    // Используем данные профиля только если параметр не передан или пустой
+    if (userProfile) {
+      if (!level && userProfile.level) {
+        level = userProfile.level;
+      }
+      if ((!equipment || equipment.length === 0) && userProfile.preferred_equipment && userProfile.preferred_equipment.length > 0) {
+        equipment = userProfile.preferred_equipment;
+      }
+      if ((!targetMuscles || targetMuscles.length === 0) && userProfile.preferred_muscles && userProfile.preferred_muscles.length > 0) {
+        targetMuscles = userProfile.preferred_muscles;
+      }
+      if (!goal && userProfile.goal) {
+        goal = userProfile.goal;
+      }
+    }
+
+    // 3. Валидация входных параметров
     if (!level || !["beginner", "intermediate", "advanced"].includes(level)) {
       return {
         data: null,
@@ -184,11 +285,14 @@ async function generateWorkout({
     if (!exercisesCount || exercisesCount < 1) {
       exercisesCount = 8;
     }
+    if (!workoutType) {
+      workoutType = "full_body";
+    }
 
-    // 2. Загрузка доступных упражнений из Supabase
+    // 4. Загрузка доступных упражнений из Supabase
     let query = supabaseAdmin
       .from("exercises")
-      .select("id, slug, name_en, main_muscle, equipment, level, instructions_en");
+      .select("id, slug, name_en, main_muscle, equipment, level, instructions_en, required_equipment_items");
 
     // Фильтрация по уровню (exact match или более легкие для высокого уровня)
     const levelOrder = { beginner: 1, intermediate: 2, advanced: 3 };
@@ -206,14 +310,21 @@ async function generateWorkout({
       query = query.in("equipment", equipment);
     }
 
-    // Фильтрация по целевым мышцам (если указаны)
+    // Фильтрация по целевым мышцам (если указаны и не "Full Body")
     if (targetMuscles && targetMuscles.length > 0) {
-      // Нормализуем названия мышц
-      const muscleFilter = targetMuscles.map((muscle) => 
-        muscle.toLowerCase().replace(/\s+/g, "_")
+      // Если targetMuscles включает "Full Body", не фильтруем по мышцам
+      const hasFullBody = targetMuscles.some(
+        (muscle) => muscle.toLowerCase().includes("full body") || muscle.toLowerCase() === "full body"
       );
-      // Фильтруем по main_muscle (точное совпадение)
-      query = query.in("main_muscle", muscleFilter);
+      
+      if (!hasFullBody) {
+        // Нормализуем названия мышц
+        const muscleFilter = targetMuscles.map((muscle) => 
+          muscle.toLowerCase().replace(/\s+/g, "_")
+        );
+        // Фильтруем по main_muscle (точное совпадение)
+        query = query.in("main_muscle", muscleFilter);
+      }
     }
 
     // Ограничение количества и рандомизация
@@ -241,11 +352,80 @@ async function generateWorkout({
       };
     }
 
-    // Рандомизация массива упражнений
-    const shuffledExercises = exercises.sort(() => Math.random() - 0.5);
+    // Фильтрация упражнений по required_equipment_items из профиля пользователя
+    let filteredExercises = exercises;
+    if (userProfile && userProfile.equipment_items && Array.isArray(userProfile.equipment_items) && userProfile.equipment_items.length > 0) {
+      // Если у пользователя есть equipment_items, фильтруем упражнения
+      const userEquipmentItems = new Set(userProfile.equipment_items);
+      
+      filteredExercises = exercises.filter((exercise) => {
+        const requiredItems = exercise.required_equipment_items || [];
+        
+        // Если required_equipment_items пустой, упражнение доступно (bodyweight)
+        if (requiredItems.length === 0) {
+          return true;
+        }
+        
+        // Проверяем, что КАЖДЫЙ элемент из required_equipment_items присутствует в profile.equipment_items
+        return requiredItems.every((item) => userEquipmentItems.has(item));
+      });
+    } else if (userProfile && (!userProfile.equipment_items || userProfile.equipment_items.length === 0)) {
+      // Если equipment_items пустой, но есть training_environment, можно отдавать bodyweight + базовые упражнения
+      // Фильтруем упражнения с пустым required_equipment_items (bodyweight)
+      const trainingEnvironment = userProfile.training_environment;
+      if (trainingEnvironment && ["home", "gym", "outdoor"].includes(trainingEnvironment)) {
+        // Отдаем bodyweight упражнения (required_equipment_items пустой)
+        filteredExercises = exercises.filter((exercise) => {
+          const requiredItems = exercise.required_equipment_items || [];
+          return requiredItems.length === 0;
+        });
+      }
+    }
 
-    // 3. Формирование промпта для OpenAI
-    const systemPrompt = `You are an experienced fitness coach. Create a safe and effective workout plan based on provided exercises and user context. Respond ONLY in valid JSON format.`;
+    if (!filteredExercises || filteredExercises.length === 0) {
+      return {
+        data: null,
+        error: {
+          message: "No exercises found matching the equipment criteria",
+          code: "NO_EXERCISES_FOUND",
+        },
+      };
+    }
+
+    // Рандомизация массива упражнений
+    const shuffledExercises = filteredExercises.sort(() => Math.random() - 0.5);
+
+    // 5. Формирование trainingContext для AI
+    const trainingContext = {
+      profile: {
+        level: userProfile?.level || level,
+        goal: userProfile?.goal || goal,
+        weightKg: latestBodyMetric?.weight_kg || userProfile?.weight_kg || null,
+        heightCm: userProfile?.height_cm || null,
+        restrictions: userProfile?.restrictions || null,
+      },
+      equipment: {
+        trainingEnvironment: userProfile?.training_environment || null,
+        equipmentItems: userProfile?.equipment_items || [],
+      },
+      trainingContext: {
+        recentSessions: ignoreHistory ? [] : recentSessions,
+      },
+    };
+
+    // 6. Формирование промпта для OpenAI
+    const systemPrompt = `You are an experienced fitness coach. Create a safe and effective workout plan based on provided exercises and user context. 
+
+IMPORTANT INSTRUCTIONS:
+- Consider the user's level (beginner/intermediate/advanced) when selecting exercises and setting intensity
+- Use the user's current weight (weightKg) for load recommendations and calculations
+- Analyze recent training sessions to avoid overloading the same muscle groups consecutively
+- Progressively increase difficulty/volume safely based on the user's history
+- Strictly respect any restrictions or injuries mentioned
+- Rotate muscle groups to allow proper recovery
+- If recent sessions show heavy training of certain muscles, focus on different muscle groups or allow recovery
+
+Respond ONLY in valid JSON format.`;
 
     const availableExercises = shuffledExercises.map((ex) => ({
       slug: ex.slug,
@@ -255,6 +435,37 @@ async function generateWorkout({
       level: ex.level,
     }));
 
+    // Формируем информацию об ограничениях из профиля
+    let restrictionsInfo = "";
+    if (userProfile && userProfile.restrictions && Object.keys(userProfile.restrictions).length > 0) {
+      restrictionsInfo = `\nIMPORTANT - User restrictions and injuries (MUST be strictly followed):
+${JSON.stringify(userProfile.restrictions, null, 2)}
+You MUST avoid exercises that could aggravate these conditions. If any exercise in the available list conflicts with these restrictions, DO NOT include it in the workout plan.`;
+    }
+
+    // Формируем информацию о тренировочном окружении и оборудовании
+    let environmentInfo = "";
+    if (userProfile) {
+      if (userProfile.training_environment) {
+        environmentInfo += `- Training environment: ${userProfile.training_environment}\n`;
+      }
+      if (userProfile.equipment_items && Array.isArray(userProfile.equipment_items) && userProfile.equipment_items.length > 0) {
+        environmentInfo += `- Available equipment items: ${userProfile.equipment_items.join(", ")}\n`;
+      }
+    }
+
+    // Формируем информацию о весе и истории тренировок
+    let contextInfo = "";
+    if (trainingContext.profile.weightKg) {
+      contextInfo += `- User current weight: ${trainingContext.profile.weightKg} kg\n`;
+    }
+    if (trainingContext.profile.heightCm) {
+      contextInfo += `- User height: ${trainingContext.profile.heightCm} cm\n`;
+    }
+    if (trainingContext.trainingContext.recentSessions.length > 0) {
+      contextInfo += `\nRecent training sessions (use this to avoid overloading same muscles and plan progression):\n${JSON.stringify(trainingContext.trainingContext.recentSessions, null, 2)}\n`;
+    }
+
     const userPrompt = `Create a workout plan with the following requirements:
 - User level: ${level}
 - Goal: ${goal}
@@ -263,7 +474,11 @@ async function generateWorkout({
 - Number of exercises: ${exercisesCount}
 - Available equipment: ${equipment.join(", ")}
 - Target muscles: ${targetMuscles.length > 0 ? targetMuscles.join(", ") : "Full Body"}
-${profileData ? `- User profile: ${JSON.stringify(profileData)}` : ""}
+${environmentInfo}${contextInfo}${userProfile ? `- User profile data: ${JSON.stringify(profileSnapshot)}` : ""}
+${restrictionsInfo}
+
+Full training context:
+${JSON.stringify(trainingContext, null, 2)}
 
 Available exercises:
 ${JSON.stringify(availableExercises, null, 2)}
@@ -288,7 +503,7 @@ Return a JSON object with this exact structure:
 
 Return ONLY valid JSON, no markdown, no code blocks.`;
 
-    // 4. Вызов OpenAI API
+    // 6. Вызов OpenAI API
     // Используем gpt-5.1 если доступен, иначе gpt-4o-mini
     let model = "gpt-5.1";
     // Fallback на gpt-4o-mini если gpt-5.1 недоступен (будет обработано в catch)
@@ -324,7 +539,7 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
 
     const responseContent = completion.choices[0].message.content;
 
-    // 5. Парсинг ответа
+    // 7. Парсинг ответа
     let parsedResponse;
     try {
       parsedResponse = JSON.parse(responseContent);
@@ -364,7 +579,7 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       }
     }
 
-    // 6. Маппинг slug → реальные упражнения
+    // 8. Маппинг slug → реальные упражнения
     const exerciseMap = new Map();
     shuffledExercises.forEach((ex) => {
       exerciseMap.set(ex.slug, ex);
@@ -408,19 +623,28 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       };
     }
 
-    // 7. Создание записи workouts в Supabase
-    const workoutTitle = meta.title || `AI ${level} ${workoutType}`;
+    // 9. Создание записи workouts в Supabase
+    const workoutName = meta.title || `AI ${level} ${workoutType}`;
     const workoutDate = new Date().toISOString().split("T")[0]; // Текущая дата в формате YYYY-MM-DD
+
+    // Формируем notes как JSON с goal и description
+    const notesData = {};
+    if (goal) {
+      notesData.goal = goal;
+    }
+    if (meta.description) {
+      notesData.description = meta.description;
+    }
+    const workoutNotes = Object.keys(notesData).length > 0 ? JSON.stringify(notesData) : null;
 
     const { data: workout, error: workoutError } = await supabaseAdmin
       .from("workouts")
       .insert([
         {
           user_id: userId,
-          title: workoutTitle,
-          goal: goal,
+          name: workoutName,
           date: workoutDate,
-          notes: meta.description || null,
+          notes: workoutNotes,
         },
       ])
       .select()
@@ -438,24 +662,17 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
 
     const workoutId = workout.id;
 
-    // 8. Создание записей workout_exercises
-    // reps может быть строкой (например "8-12"), сохраняем как есть
-    // Если reps - число, конвертируем в строку для единообразия
+    // 10. Создание записей workout_exercises
+    // Не сохраняем tempo и notes в БД (полей нет в схеме)
+    // Парсим reps из строки в INTEGER
     const workoutExercises = mappedPlan.map((item, index) => {
-      let repsValue = item.reps;
-      if (repsValue && typeof repsValue === "number") {
-        repsValue = repsValue.toString();
-      }
-      
       return {
         workout_id: workoutId,
         exercise_id: item.exercise_id,
         sets: item.sets ? parseInt(item.sets) : null,
-        reps: repsValue || null,
-        rest_sec: item.rest_sec ? parseInt(item.rest_sec) : null,
-        tempo: item.tempo || null,
+        reps: parseReps(item.reps),
+        rest_seconds: item.rest_sec ? parseInt(item.rest_sec) : null,
         order_index: index,
-        notes: item.notes || null,
       };
     });
 
@@ -475,16 +692,28 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       };
     }
 
-    // 9. Запись в ai_logs
+    // 11. Запись в ai_logs
+    // Сохраняем исходные параметры запроса и использованный профиль
     const requestData = {
-      level,
-      equipment,
-      targetMuscles,
-      goal,
-      durationMinutes,
-      exercisesCount,
-      workoutType,
-      profileData,
+      // Исходные параметры из запроса (до обогащения профилем)
+      original_params: originalParams,
+      // Финальные параметры, использованные для генерации (после обогащения)
+      final_params: {
+        level,
+        equipment,
+        targetMuscles,
+        goal,
+        durationMinutes,
+        exercisesCount,
+        workoutType,
+        ignoreHistory,
+      },
+      // Снимок профиля, если он был использован
+      profile_snapshot: profileSnapshot || null,
+      // Контекст тренировки, переданный в AI
+      training_context: trainingContext,
+      // Старое поле для обратной совместимости (deprecated)
+      profileData: profileData || null,
     };
 
     const responseData = {
@@ -500,15 +729,17 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       meta,
     };
 
-    await logAIRequest(userId, "workout", requestData, responseData);
+    // Используем анонимного пользователя, если userId null
+    const logUserId = userId ?? ANONYMOUS_USER_ID;
+    await logAIRequest(logUserId, "workout", requestData, responseData);
 
-    // 10. Возвращаемое значение
+    // 12. Возвращаемое значение
     return {
       data: {
         workoutId,
         workout: {
           id: workoutId,
-          title: workoutTitle,
+          title: workoutName,
           goal: goal,
           userId: userId,
         },

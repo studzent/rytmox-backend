@@ -2,9 +2,13 @@ const aiService = require("../services/aiService");
 
 exports.generateWorkout = async (req, res) => {
   try {
+    // Извлечение userId: приоритет у токена, затем body, затем null
+    const userIdFromToken = req.user?.id;
+    const userIdFromBody = req.body.userId;
+    const userId = userIdFromToken || userIdFromBody || null;
+
     // Извлечение параметров из req.body
     const {
-      userId,
       level,
       equipment,
       targetMuscles,
@@ -13,11 +17,12 @@ exports.generateWorkout = async (req, res) => {
       exercisesCount,
       workoutType,
       profileData,
+      ignoreHistory,
     } = req.body;
 
     // Вызов сервиса
     const { data, error } = await aiService.generateWorkout({
-      userId: userId || null,
+      userId: userId,
       level,
       equipment,
       targetMuscles,
@@ -26,6 +31,7 @@ exports.generateWorkout = async (req, res) => {
       exercisesCount,
       workoutType,
       profileData: profileData || null,
+      ignoreHistory: ignoreHistory || false,
     });
 
     // Обработка ошибок
