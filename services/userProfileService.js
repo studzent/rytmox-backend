@@ -65,36 +65,34 @@ async function upsertUserProfile(userId, payload) {
     }
 
     // Подготовка данных для update/insert
-    // Сохраняем все данные онбординга в profile_data (JSONB), так как отдельных колонок может не быть
+    // Сохраняем данные в отдельные колонки таблицы users
     const profileData = {
       id: userId,
       updated_at: new Date().toISOString(),
-      profile_data: {}, // Будем собирать все данные онбординга сюда
     };
 
-    // Добавляем только переданные поля (частичное обновление)
+    // Добавляем только переданные поля (частичное обновление) - сохраняем в отдельные колонки
     if (payload.level !== undefined) {
       profileData.level = payload.level;
     }
     if (payload.goal !== undefined) {
       profileData.goal = payload.goal;
     }
-    // Добавляем все поля онбординга в profile_data
     if (payload.preferred_equipment !== undefined) {
-      existingProfileData.preferred_equipment = Array.isArray(payload.preferred_equipment)
+      profileData.preferred_equipment = Array.isArray(payload.preferred_equipment)
         ? payload.preferred_equipment
         : [];
     }
     if (payload.preferred_muscles !== undefined) {
-      existingProfileData.preferred_muscles = Array.isArray(payload.preferred_muscles)
+      profileData.preferred_muscles = Array.isArray(payload.preferred_muscles)
         ? payload.preferred_muscles
         : [];
     }
     if (payload.language !== undefined) {
-      existingProfileData.language = payload.language;
+      profileData.language = payload.language;
     }
     if (payload.restrictions !== undefined) {
-      existingProfileData.restrictions =
+      profileData.restrictions =
         typeof payload.restrictions === "object" && payload.restrictions !== null
           ? payload.restrictions
           : {};
@@ -110,18 +108,12 @@ async function upsertUserProfile(userId, payload) {
           },
         };
       }
-      existingProfileData.training_environment = payload.training_environment;
+      profileData.training_environment = payload.training_environment;
     }
     if (payload.equipment_items !== undefined) {
-      existingProfileData.equipment_items = Array.isArray(payload.equipment_items)
+      profileData.equipment_items = Array.isArray(payload.equipment_items)
         ? payload.equipment_items
         : [];
-    }
-    if (payload.equipment_weights !== undefined) {
-      existingProfileData.equipment_weights =
-        typeof payload.equipment_weights === "object" && payload.equipment_weights !== null
-          ? payload.equipment_weights
-          : {};
     }
     if (payload.weight_kg !== undefined) {
       if (payload.weight_kg !== null && (isNaN(payload.weight_kg) || payload.weight_kg <= 0)) {
@@ -133,7 +125,7 @@ async function upsertUserProfile(userId, payload) {
           },
         };
       }
-      existingProfileData.weight_kg = payload.weight_kg;
+      profileData.weight_kg = payload.weight_kg;
     }
     if (payload.height_cm !== undefined) {
       if (payload.height_cm !== null && (isNaN(payload.height_cm) || payload.height_cm <= 0)) {
@@ -145,7 +137,7 @@ async function upsertUserProfile(userId, payload) {
           },
         };
       }
-      existingProfileData.height_cm = payload.height_cm;
+      profileData.height_cm = payload.height_cm;
     }
     if (payload.coach_style !== undefined) {
       const validStyles = ["sergeant", "partner", "scientist"];
@@ -158,14 +150,14 @@ async function upsertUserProfile(userId, payload) {
           },
         };
       }
-      existingProfileData.coach_style = payload.coach_style;
+      profileData.coach_style = payload.coach_style;
     }
     if (payload.date_of_birth !== undefined) {
-      existingProfileData.date_of_birth = payload.date_of_birth;
+      profileData.date_of_birth = payload.date_of_birth;
     }
     if (payload.goals !== undefined) {
-      existingProfileData.goals = Array.isArray(payload.goals) ? payload.goals : [];
-      if (existingProfileData.goals.length > 2) {
+      profileData.goals = Array.isArray(payload.goals) ? payload.goals : [];
+      if (profileData.goals.length > 2) {
         return {
           data: null,
           error: {
@@ -176,7 +168,7 @@ async function upsertUserProfile(userId, payload) {
       }
     }
     if (payload.special_programs !== undefined) {
-      existingProfileData.special_programs = Array.isArray(payload.special_programs)
+      profileData.special_programs = Array.isArray(payload.special_programs)
         ? payload.special_programs
         : [];
     }
@@ -193,10 +185,10 @@ async function upsertUserProfile(userId, payload) {
           },
         };
       }
-      existingProfileData.training_days_per_week = payload.training_days_per_week;
+      profileData.training_days_per_week = payload.training_days_per_week;
     }
     if (payload.name !== undefined) {
-      existingProfileData.name = payload.name;
+      profileData.name = payload.name;
     }
     if (payload.gender !== undefined) {
       const validGenders = ["male", "female", "other", "prefer_not_to_say"];
@@ -209,19 +201,19 @@ async function upsertUserProfile(userId, payload) {
           },
         };
       }
-      existingProfileData.gender = payload.gender;
+      profileData.gender = payload.gender;
     }
     if (payload.contraindications !== undefined) {
-      existingProfileData.contraindications =
+      profileData.contraindications =
         typeof payload.contraindications === "object" && payload.contraindications !== null
           ? payload.contraindications
           : {};
     }
     if (payload.notifications_enabled !== undefined) {
-      existingProfileData.notifications_enabled = Boolean(payload.notifications_enabled);
+      profileData.notifications_enabled = Boolean(payload.notifications_enabled);
     }
     if (payload.nutrition_enabled !== undefined) {
-      existingProfileData.nutrition_enabled = Boolean(payload.nutrition_enabled);
+      profileData.nutrition_enabled = Boolean(payload.nutrition_enabled);
     }
     if (payload.current_step !== undefined) {
       if (payload.current_step !== null && (isNaN(payload.current_step) || payload.current_step < 0)) {
@@ -233,11 +225,8 @@ async function upsertUserProfile(userId, payload) {
           },
         };
       }
-      existingProfileData.current_step = payload.current_step;
+      profileData.current_step = payload.current_step;
     }
-
-    // Сохраняем собранные данные в profile_data
-    profileData.profile_data = existingProfileData;
 
     // Проверяем, существует ли пользователь
     const { data: existingUser, error: checkError } = await supabaseAdmin
