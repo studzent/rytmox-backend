@@ -258,6 +258,7 @@ async function upsertUserProfile(userId, payload) {
       // Добавляем обязательные поля для нового пользователя
       // created_at устанавливается автоматически в БД (DEFAULT NOW())
       const newUserData = {
+        id: userId, // При создании нужно указать id
         ...profileData,
         // Убираем auth_type и is_active - их может не быть в схеме
       };
