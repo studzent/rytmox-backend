@@ -6,13 +6,38 @@ const { supabaseAdmin } = require("../utils/supabaseClient");
  */
 async function createAnonymousUser() {
   try {
-    // Создаём пользователя с минимальными данными - только id (автогенерируется)
-    // Не передаём никаких полей, чтобы Supabase использовал значения по умолчанию
-    const { data, error } = await supabaseAdmin
+    // Создаём пользователя - используем только id (автогенерируется)
+    // Если в БД есть обязательные поля email/password_hash, нужно их передать
+    // Но сначала пробуем без них
+    let data, error;
+    
+    // Пробуем создать без обязательных полей
+    const result = await supabaseAdmin
       .from("users")
       .insert([{}])
       .select("id")
       .single();
+    
+    data = result.data;
+    error = result.error;
+    
+    // Если ошибка из-за обязательных полей, пробуем с пустыми строками
+    if (error && (error.message.includes('email') || error.message.includes('password_hash') || error.message.includes('NOT NULL'))) {
+      console.log('[createAnonymousUser] Retrying with email and password_hash...');
+      const retryResult = await supabaseAdmin
+        .from("users")
+        .insert([
+          {
+            email: `anonymous_${Date.now()}@rytmox.local`,
+            password_hash: 'anonymous',
+          },
+        ])
+        .select("id")
+        .single();
+      
+      data = retryResult.data;
+      error = retryResult.error;
+    }
 
     if (error) {
       return {
