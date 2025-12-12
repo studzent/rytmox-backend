@@ -66,6 +66,10 @@ async function upsertUserProfile(userId, payload) {
 
     // Подготовка данных для update/insert
     // Сохраняем данные в отдельные колонки таблицы users
+    console.log(`[upsertUserProfile] Starting profile update for user ${userId}`);
+    console.log(`[upsertUserProfile] Received payload keys:`, Object.keys(payload));
+    console.log(`[upsertUserProfile] Received payload:`, JSON.stringify(payload, null, 2));
+    
     const profileData = {
       // id не добавляем - он используется только для WHERE в UPDATE или INSERT
       // updated_at убран - этой колонки нет в таблице users
@@ -79,11 +83,13 @@ async function upsertUserProfile(userId, payload) {
       profileData.goal = payload.goal;
     }
     if (payload.preferred_equipment !== undefined) {
+      // Пустые массивы [] тоже сохраняем - это валидное значение
       profileData.preferred_equipment = Array.isArray(payload.preferred_equipment)
         ? payload.preferred_equipment
         : [];
     }
     if (payload.preferred_muscles !== undefined) {
+      // Пустые массивы [] тоже сохраняем - это валидное значение
       profileData.preferred_muscles = Array.isArray(payload.preferred_muscles)
         ? payload.preferred_muscles
         : [];
@@ -96,6 +102,20 @@ async function upsertUserProfile(userId, payload) {
         typeof payload.restrictions === "object" && payload.restrictions !== null
           ? payload.restrictions
           : {};
+    }
+    // equipment_weights сохраняем в restrictions, так как отдельного поля нет в таблице
+    if (payload.equipment_weights !== undefined) {
+      // Инициализируем restrictions, если его еще нет
+      if (!profileData.restrictions) {
+        profileData.restrictions = {};
+      }
+      // Проверяем, что restrictions - это объект (не массив и не null)
+      if (typeof profileData.restrictions === "object" && profileData.restrictions !== null && !Array.isArray(profileData.restrictions)) {
+        profileData.restrictions.equipment_weights = payload.equipment_weights;
+        console.log(`[upsertUserProfile] Added equipment_weights to restrictions:`, Object.keys(payload.equipment_weights || {}).length, 'items');
+      } else {
+        console.warn(`[upsertUserProfile] Cannot add equipment_weights: restrictions is not a valid object`);
+      }
     }
     if (payload.training_environment !== undefined) {
       const validEnvironments = ["home", "gym", "outdoor"];
@@ -111,6 +131,7 @@ async function upsertUserProfile(userId, payload) {
       profileData.training_environment = payload.training_environment;
     }
     if (payload.equipment_items !== undefined) {
+      // Пустые массивы [] тоже сохраняем - это валидное значение
       profileData.equipment_items = Array.isArray(payload.equipment_items)
         ? payload.equipment_items
         : [];
@@ -168,6 +189,7 @@ async function upsertUserProfile(userId, payload) {
       }
     }
     if (payload.special_programs !== undefined) {
+      // Пустые массивы [] тоже сохраняем - это валидное значение
       profileData.special_programs = Array.isArray(payload.special_programs)
         ? payload.special_programs
         : [];
@@ -257,15 +279,23 @@ async function upsertUserProfile(userId, payload) {
       console.log(`[upsertUserProfile] Creating new user ${userId}`);
       // Добавляем обязательные поля для нового пользователя
       // created_at устанавливается автоматически в БД (DEFAULT NOW())
+      // Генерируем уникальный email для избежания конфликтов
+      const timestamp = Date.now();
+      const userIdShort = userId.substring(0, 8);
+      const uniqueEmail = `anonymous_${timestamp}_${userIdShort}@rytmox.local`;
+      
       const newUserData = {
         id: userId, // При создании нужно указать id
-        email: `anonymous_${Date.now()}_${userId.substring(0, 8)}@rytmox.local`, // Обязательное поле
+        email: uniqueEmail, // Обязательное поле, уникальное
         password_hash: 'anonymous', // Обязательное поле
         ...profileData,
         // Убираем auth_type и is_active - их может не быть в схеме
       };
       console.log(`[upsertUserProfile] New user data keys:`, Object.keys(newUserData));
-      console.log(`[upsertUserProfile] New user data:`, JSON.stringify(newUserData, null, 2));
+      console.log(`[upsertUserProfile] New user data (excluding sensitive):`, JSON.stringify({
+        ...newUserData,
+        password_hash: '[REDACTED]'
+      }, null, 2));
       result = await supabaseAdmin
         .from("users")
         .insert([newUserData])
@@ -275,10 +305,22 @@ async function upsertUserProfile(userId, payload) {
 
     if (result.error) {
       console.error("[upsertUserProfile] Error saving profile:", result.error);
+      console.error("[upsertUserProfile] Error details:", JSON.stringify(result.error, null, 2));
       return { data: null, error: result.error };
     }
 
-    console.log(`[upsertUserProfile] Successfully saved profile for user ${userId}`);
+    console.log(`[upsertUserProfile] ✅ Successfully saved profile for user ${userId}`);
+    console.log(`[upsertUserProfile] Saved data keys:`, Object.keys(result.data || {}));
+    console.log(`[upsertUserProfile] Saved profile summary:`, {
+      id: result.data?.id,
+      name: result.data?.name,
+      level: result.data?.level,
+      goal: result.data?.goal,
+      weight_kg: result.data?.weight_kg,
+      height_cm: result.data?.height_cm,
+      equipment_items_count: Array.isArray(result.data?.equipment_items) ? result.data.equipment_items.length : 0,
+      goals_count: Array.isArray(result.data?.goals) ? result.data.goals.length : 0,
+    });
     return { data: result.data, error: null };
   } catch (err) {
     return {
