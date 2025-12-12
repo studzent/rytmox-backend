@@ -68,7 +68,7 @@ async function upsertUserProfile(userId, payload) {
     // Сохраняем данные в отдельные колонки таблицы users
     const profileData = {
       id: userId,
-      updated_at: new Date().toISOString(),
+      // updated_at убран - этой колонки нет в таблице users
     };
 
     // Добавляем только переданные поля (частичное обновление) - сохраняем в отдельные колонки
