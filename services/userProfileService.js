@@ -18,9 +18,9 @@ async function getUserProfile(userId) {
     }
 
     const { data, error } = await supabaseAdmin
-      .from("user_profiles")
+      .from("users")
       .select("*")
-      .eq("user_id", userId)
+      .eq("id", userId)
       .single();
 
     if (error) {
@@ -64,9 +64,9 @@ async function upsertUserProfile(userId, payload) {
       };
     }
 
-    // Подготовка данных для upsert
+    // Подготовка данных для update (обновляем существующего пользователя)
     const profileData = {
-      user_id: userId,
+      id: userId,
       updated_at: new Date().toISOString(),
     };
 
@@ -146,13 +146,112 @@ async function upsertUserProfile(userId, payload) {
       profileData.height_cm = payload.height_cm;
     }
 
-    // Используем upsert (INSERT ... ON CONFLICT UPDATE)
+    // Поля онбординга
+    if (payload.coach_style !== undefined) {
+      const validStyles = ["sergeant", "partner", "scientist"];
+      if (payload.coach_style && !validStyles.includes(payload.coach_style)) {
+        return {
+          data: null,
+          error: {
+            message: `coach_style must be one of: ${validStyles.join(", ")}`,
+            code: "VALIDATION_ERROR",
+          },
+        };
+      }
+      profileData.coach_style = payload.coach_style;
+    }
+
+    if (payload.date_of_birth !== undefined) {
+      profileData.date_of_birth = payload.date_of_birth;
+    }
+
+    if (payload.goals !== undefined) {
+      profileData.goals = Array.isArray(payload.goals) ? payload.goals : [];
+      // Валидация: максимум 2 цели
+      if (profileData.goals.length > 2) {
+        return {
+          data: null,
+          error: {
+            message: "goals array must contain at most 2 items",
+            code: "VALIDATION_ERROR",
+          },
+        };
+      }
+    }
+
+    if (payload.special_programs !== undefined) {
+      profileData.special_programs = Array.isArray(payload.special_programs)
+        ? payload.special_programs
+        : [];
+    }
+
+    if (payload.training_days_per_week !== undefined) {
+      if (
+        payload.training_days_per_week !== null &&
+        (isNaN(payload.training_days_per_week) || payload.training_days_per_week < 0)
+      ) {
+        return {
+          data: null,
+          error: {
+            message: "training_days_per_week must be a non-negative number or null",
+            code: "VALIDATION_ERROR",
+          },
+        };
+      }
+      profileData.training_days_per_week = payload.training_days_per_week;
+    }
+
+    if (payload.name !== undefined) {
+      profileData.name = payload.name;
+    }
+
+    if (payload.gender !== undefined) {
+      const validGenders = ["male", "female", "other", "prefer_not_to_say"];
+      if (payload.gender && !validGenders.includes(payload.gender)) {
+        return {
+          data: null,
+          error: {
+            message: `gender must be one of: ${validGenders.join(", ")}`,
+            code: "VALIDATION_ERROR",
+          },
+        };
+      }
+      profileData.gender = payload.gender;
+    }
+
+    if (payload.contraindications !== undefined) {
+      profileData.contraindications =
+        typeof payload.contraindications === "object" && payload.contraindications !== null
+          ? payload.contraindications
+          : {};
+    }
+
+    if (payload.notifications_enabled !== undefined) {
+      profileData.notifications_enabled = Boolean(payload.notifications_enabled);
+    }
+
+    if (payload.nutrition_enabled !== undefined) {
+      profileData.nutrition_enabled = Boolean(payload.nutrition_enabled);
+    }
+
+    if (payload.current_step !== undefined) {
+      if (payload.current_step !== null && (isNaN(payload.current_step) || payload.current_step < 0)) {
+        return {
+          data: null,
+          error: {
+            message: "current_step must be a non-negative number or null",
+            code: "VALIDATION_ERROR",
+          },
+        };
+      }
+      profileData.current_step = payload.current_step;
+    }
+
+    // Обновляем существующего пользователя
     const { data, error } = await supabaseAdmin
-      .from("user_profiles")
-      .upsert(profileData, {
-        onConflict: "user_id",
-        ignoreDuplicates: false,
-      })
+      .from("users")
+      .update(profileData)
+      .eq("id", userId)
       .select()
       .single();
 
