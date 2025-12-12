@@ -251,8 +251,11 @@ async function generateWorkout({
       if (!level && userProfile.level) {
         level = userProfile.level;
       }
-      if ((!equipment || equipment.length === 0) && userProfile.preferred_equipment && userProfile.preferred_equipment.length > 0) {
-        equipment = userProfile.preferred_equipment;
+      // ВАЖНО: Используем equipment_items (slug-ы), а не preferred_equipment
+      // equipment_items - это то, что пользователь выбрал в онбординге
+      if ((!equipment || equipment.length === 0) && userProfile.equipment_items && userProfile.equipment_items.length > 0) {
+        equipment = userProfile.equipment_items;
+        console.log(`[aiService] Using equipment_items from profile:`, equipment);
       }
       if ((!targetMuscles || targetMuscles.length === 0) && userProfile.preferred_muscles && userProfile.preferred_muscles.length > 0) {
         targetMuscles = userProfile.preferred_muscles;
@@ -273,10 +276,9 @@ async function generateWorkout({
       };
     }
 
-    // Если equipment пустой, используем bodyweight по умолчанию
-    if (!equipment || equipment.length === 0) {
-      equipment = ["bodyweight"];
-    }
+    // Если equipment пустой (0 тренажеров), не устанавливаем по умолчанию
+    // В этом случае будем искать любые упражнения с учетом уровня и целей
+    // Если equipment не пустой, используем ТОЛЬКО выбранные тренажеры
 
     // Дефолтные значения
     if (!durationMinutes || durationMinutes < 10) {
@@ -290,6 +292,13 @@ async function generateWorkout({
     }
 
     // 4. Загрузка доступных упражнений из Supabase
+    console.log(`[aiService] Loading exercises with filters:`, {
+      level,
+      equipment: equipment || [],
+      equipmentLength: equipment ? equipment.length : 0,
+      targetMuscles: targetMuscles || [],
+    });
+
     let query = supabaseAdmin
       .from("exercises")
       .select("id, slug, name_en, name_ru, main_muscle, equipment, level, instructions_en, required_equipment_items, thumbnail_url");
@@ -305,9 +314,19 @@ async function generateWorkout({
       query = query.eq("level", level);
     }
 
-    // Фильтрация по оборудованию (equipment IN массив или bodyweight)
-    if (equipment.length > 0) {
-      query = query.in("equipment", equipment);
+    // Фильтрация по оборудованию
+    // ВАЖНО: Пользователь выбирает equipment_items (slug-ы), которые сохраняются в users.equipment_items
+    // В таблице exercises есть поле required_equipment_items (массив slug-ов)
+    // Мы НЕ фильтруем на уровне SQL, так как фильтрация массивов сложна
+    // Вместо этого загружаем все упражнения и фильтруем в JavaScript
+    // Если equipment не пустой - используем ТОЛЬКО выбранные тренажеры
+    // Если equipment пустой (0 тренажеров) - не фильтруем по оборудованию
+    
+    if (equipment && equipment.length > 0) {
+      console.log(`[aiService] Will filter by equipment_items (slugs) after query:`, equipment);
+      // Не фильтруем на уровне SQL, сделаем это после загрузки
+    } else {
+      console.log(`[aiService] No equipment filter (0 тренажеров), will use any exercises`);
     }
 
     // Фильтрация по целевым мышцам (если указаны и не "Full Body")
@@ -333,6 +352,7 @@ async function generateWorkout({
       .order("created_at", { ascending: false });
 
     if (exercisesError) {
+      console.error(`[aiService] Database error loading exercises:`, exercisesError);
       return {
         data: null,
         error: {
@@ -342,23 +362,16 @@ async function generateWorkout({
       };
     }
 
-    if (!exercises || exercises.length === 0) {
-      return {
-        data: null,
-        error: {
-          message: "No exercises found matching the criteria",
-          code: "NO_EXERCISES_FOUND",
-        },
-      };
-    }
+    console.log(`[aiService] Found ${exercises ? exercises.length : 0} exercises after initial query`);
 
-    // Фильтрация упражнений по required_equipment_items из профиля пользователя
-    let filteredExercises = exercises;
-    if (userProfile && userProfile.equipment_items && Array.isArray(userProfile.equipment_items) && userProfile.equipment_items.length > 0) {
-      // Если у пользователя есть equipment_items, фильтруем упражнения
-      const userEquipmentItems = new Set(userProfile.equipment_items);
+    // Фильтрация по required_equipment_items (если equipment не пустой)
+    if (equipment && equipment.length > 0 && exercises && exercises.length > 0) {
+      const userEquipmentItems = new Set(equipment);
       
-      filteredExercises = exercises.filter((exercise) => {
+      // Фильтруем упражнения: подходят те, у которых:
+      // 1. required_equipment_items пустой (bodyweight) - доступно всем
+      // 2. required_equipment_items содержит элементы, которые ВСЕ есть в equipment пользователя
+      exercises = exercises.filter((exercise) => {
         const requiredItems = exercise.required_equipment_items || [];
         
         // Если required_equipment_items пустой, упражнение доступно (bodyweight)
@@ -366,30 +379,86 @@ async function generateWorkout({
           return true;
         }
         
-        // Проверяем, что КАЖДЫЙ элемент из required_equipment_items присутствует в profile.equipment_items
+        // Проверяем, что КАЖДЫЙ элемент из required_equipment_items присутствует в equipment пользователя
+        // Это означает, что у пользователя есть все необходимое оборудование
         return requiredItems.every((item) => userEquipmentItems.has(item));
       });
-    } else if (userProfile && (!userProfile.equipment_items || userProfile.equipment_items.length === 0)) {
-      // Если equipment_items пустой, но есть training_environment, можно отдавать bodyweight + базовые упражнения
-      // Фильтруем упражнения с пустым required_equipment_items (bodyweight)
-      const trainingEnvironment = userProfile.training_environment;
-      if (trainingEnvironment && ["home", "gym", "outdoor"].includes(trainingEnvironment)) {
-        // Отдаем bodyweight упражнения (required_equipment_items пустой)
-        filteredExercises = exercises.filter((exercise) => {
-          const requiredItems = exercise.required_equipment_items || [];
-          return requiredItems.length === 0;
-        });
+      
+      console.log(`[aiService] After filtering by required_equipment_items: ${exercises.length} exercises`);
+    }
+
+    // Fallback логика: только если equipment был пустой (0 тренажеров)
+    // Если пользователь выбрал тренажеры, но упражнений не найдено - возвращаем ошибку
+    if (!exercises || exercises.length === 0) {
+      // Если equipment был пустой - пробуем найти любые упражнения для уровня
+      if (!equipment || equipment.length === 0) {
+        console.log(`[aiService] No equipment selected, trying any exercises for level: ${level}`);
+        
+        let anyLevelQuery = supabaseAdmin
+          .from("exercises")
+          .select("id, slug, name_en, name_ru, main_muscle, equipment, level, instructions_en, required_equipment_items, thumbnail_url");
+        
+        const levelOrder = { beginner: 1, intermediate: 2, advanced: 3 };
+        const userLevel = levelOrder[level];
+        if (userLevel >= 2) {
+          anyLevelQuery = anyLevelQuery.in("level", ["beginner", level === "advanced" ? "intermediate" : level]);
+        } else {
+          anyLevelQuery = anyLevelQuery.eq("level", level);
+        }
+        
+        const { data: anyExercises, error: anyError } = await anyLevelQuery
+          .limit(50)
+          .order("created_at", { ascending: false });
+        
+        if (!anyError && anyExercises && anyExercises.length > 0) {
+          console.log(`[aiService] Found ${anyExercises.length} exercises for level (no equipment filter)`);
+          exercises = anyExercises;
+        } else {
+          return {
+            data: null,
+            error: {
+              message: "No exercises found for your level. Please contact support.",
+              code: "NO_EXERCISES_FOUND",
+            },
+          };
+        }
+      } else {
+        // Если пользователь выбрал тренажеры, но упражнений не найдено - ошибка
+        return {
+          data: null,
+          error: {
+            message: `No exercises found for selected equipment: ${equipment.join(', ')}. Please check your equipment selection or contact support.`,
+            code: "NO_EXERCISES_FOUND",
+          },
+        };
       }
     }
 
+    // exercises уже отфильтрованы по required_equipment_items выше (если equipment не пустой)
+    // Используем их как filteredExercises
+    let filteredExercises = exercises;
+    
+    // Если после фильтрации ничего не осталось и equipment был не пустой - ошибка
     if (!filteredExercises || filteredExercises.length === 0) {
-      return {
-        data: null,
-        error: {
-          message: "No exercises found matching the equipment criteria",
-          code: "NO_EXERCISES_FOUND",
-        },
-      };
+      if (equipment && equipment.length > 0) {
+        // Если пользователь выбрал тренажеры, но упражнений не найдено - ошибка
+        return {
+          data: null,
+          error: {
+            message: `No exercises found matching the selected equipment criteria. Please check your equipment selection or contact support.`,
+            code: "NO_EXERCISES_FOUND",
+          },
+        };
+      } else {
+        // Если equipment был пустой, но упражнений все равно нет - ошибка
+        return {
+          data: null,
+          error: {
+            message: "No exercises found for your level. Please contact support.",
+            code: "NO_EXERCISES_FOUND",
+          },
+        };
+      }
     }
 
     // Рандомизация массива упражнений
