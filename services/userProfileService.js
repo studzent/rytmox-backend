@@ -64,7 +64,7 @@ async function upsertUserProfile(userId, payload) {
       };
     }
 
-    // Подготовка данных для update (обновляем существующего пользователя)
+    // Подготовка данных для update/insert
     const profileData = {
       id: userId,
       updated_at: new Date().toISOString(),
@@ -118,6 +118,13 @@ async function upsertUserProfile(userId, payload) {
       profileData.equipment_items = Array.isArray(payload.equipment_items)
         ? payload.equipment_items
         : [];
+    }
+    if (payload.equipment_weights !== undefined) {
+      // Убеждаемся, что это объект
+      profileData.equipment_weights =
+        typeof payload.equipment_weights === "object" && payload.equipment_weights !== null
+          ? payload.equipment_weights
+          : {};
     }
     if (payload.weight_kg !== undefined) {
       // Валидация weight_kg
@@ -247,19 +254,52 @@ async function upsertUserProfile(userId, payload) {
       profileData.current_step = payload.current_step;
     }
 
-    // Обновляем существующего пользователя
-    const { data, error } = await supabaseAdmin
+    // Проверяем, существует ли пользователь
+    const { data: existingUser, error: checkError } = await supabaseAdmin
       .from("users")
-      .update(profileData)
+      .select("id")
       .eq("id", userId)
-      .select()
-      .single();
+      .maybeSingle();
 
-    if (error) {
-      return { data: null, error };
+    if (checkError && checkError.code !== "PGRST116") {
+      console.error("[upsertUserProfile] Error checking user existence:", checkError);
+      return { data: null, error: checkError };
     }
 
-    return { data, error: null };
+    let result;
+    if (existingUser) {
+      // Обновляем существующего пользователя
+      console.log(`[upsertUserProfile] Updating existing user ${userId}`);
+      result = await supabaseAdmin
+        .from("users")
+        .update(profileData)
+        .eq("id", userId)
+        .select()
+        .single();
+    } else {
+      // Создаём нового пользователя (если его нет)
+      console.log(`[upsertUserProfile] Creating new user ${userId}`);
+      // Добавляем обязательные поля для нового пользователя
+      const newUserData = {
+        ...profileData,
+        created_at: new Date().toISOString(),
+        auth_type: "anonymous",
+        is_active: true,
+      };
+      result = await supabaseAdmin
+        .from("users")
+        .insert([newUserData])
+        .select()
+        .single();
+    }
+
+    if (result.error) {
+      console.error("[upsertUserProfile] Error saving profile:", result.error);
+      return { data: null, error: result.error };
+    }
+
+    console.log(`[upsertUserProfile] Successfully saved profile for user ${userId}`);
+    return { data: result.data, error: null };
   } catch (err) {
     return {
       data: null,
