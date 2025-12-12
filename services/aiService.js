@@ -292,7 +292,7 @@ async function generateWorkout({
     // 4. Загрузка доступных упражнений из Supabase
     let query = supabaseAdmin
       .from("exercises")
-      .select("id, slug, name_en, main_muscle, equipment, level, instructions_en, required_equipment_items");
+      .select("id, slug, name_en, name_ru, main_muscle, equipment, level, instructions_en, required_equipment_items, thumbnail_url");
 
     // Фильтрация по уровню (exact match или более легкие для высокого уровня)
     const levelOrder = { beginner: 1, intermediate: 2, advanced: 3 };
@@ -599,8 +599,10 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
         exercise_id: exercise.id,
         exercise_slug: item.exercise_slug,
         name_en: exercise.name_en,
+        name_ru: exercise.name_ru || null,
         main_muscle: exercise.main_muscle,
         equipment: exercise.equipment,
+        thumbnail_url: exercise.thumbnail_url || null,
         sets: item.sets || null,
         reps: item.reps || null,
         rest_sec: item.rest_sec || null,

@@ -82,7 +82,7 @@ async function getWorkoutById(workoutId) {
         // Получаем упражнение
         const { data: exercise, error: exerciseError } = await supabaseAdmin
           .from("exercises")
-          .select("id, slug, name_en, main_muscle, equipment")
+          .select("id, slug, name_en, name_ru, main_muscle, equipment, thumbnail_url")
           .eq("id", we.exercise_id)
           .single();
 
@@ -119,8 +119,10 @@ async function getWorkoutById(workoutId) {
           exercise_id: exercise.id,
           slug: exercise.slug,
           name_en: exercise.name_en,
+          name_ru: exercise.name_ru || null,
           main_muscle: exercise.main_muscle,
           equipment: exercise.equipment,
+          thumbnail_url: exercise.thumbnail_url || null,
           sets: we.sets,
           reps: we.reps,
           rest_sec: we.rest_seconds,
@@ -361,9 +363,66 @@ async function getUserWorkoutSessions(userId, options = {}) {
   }
 }
 
+/**
+ * Получение тренировки пользователя на сегодня (по дате) с полной информацией
+ * @param {string} userId - UUID пользователя
+ * @returns {Promise<{data: object|null, error: object|null}>}
+ */
+async function getTodayWorkout(userId) {
+  try {
+    if (!userId) {
+      return {
+        data: null,
+        error: {
+          message: "userId is required",
+          code: "VALIDATION_ERROR",
+        },
+      };
+    }
+
+    const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+
+    // Берём последнюю созданную тренировку на сегодня (если вдруг их несколько)
+    const { data: workout, error: workoutError } = await supabaseAdmin
+      .from("workouts")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("date", today)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (workoutError) {
+      return {
+        data: null,
+        error: {
+          message: `Failed to load today's workout: ${workoutError.message}`,
+          code: "DATABASE_ERROR",
+        },
+      };
+    }
+
+    if (!workout) {
+      return { data: null, error: null };
+    }
+
+    return await getWorkoutById(workout.id);
+  } catch (err) {
+    console.error("Error in getTodayWorkout:", err);
+    return {
+      data: null,
+      error: {
+        message: err.message || "Internal server error",
+        code: "INTERNAL_ERROR",
+      },
+    };
+  }
+}
+
 module.exports = {
   getWorkoutById,
   getWorkoutsByUser,
   getUserWorkoutSessions,
+  getTodayWorkout,
 };
 
