@@ -347,7 +347,7 @@ async function generateWorkout({
     }
 
     // Ограничение количества и рандомизация
-    const { data: exercises, error: exercisesError } = await query
+    const { data: exercisesData, error: exercisesError } = await query
       .limit(50)
       .order("created_at", { ascending: false });
 
@@ -362,6 +362,8 @@ async function generateWorkout({
       };
     }
 
+    // Используем let, так как будем переназначать переменную при фильтрации
+    let exercises = exercisesData;
     console.log(`[aiService] Found ${exercises ? exercises.length : 0} exercises after initial query`);
 
     // Фильтрация по required_equipment_items (если equipment не пустой)
