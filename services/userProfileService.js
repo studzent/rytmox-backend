@@ -259,6 +259,8 @@ async function upsertUserProfile(userId, payload) {
       // created_at устанавливается автоматически в БД (DEFAULT NOW())
       const newUserData = {
         id: userId, // При создании нужно указать id
+        email: `anonymous_${Date.now()}_${userId.substring(0, 8)}@rytmox.local`, // Обязательное поле
+        password_hash: 'anonymous', // Обязательное поле
         ...profileData,
         // Убираем auth_type и is_active - их может не быть в схеме
       };
