@@ -283,8 +283,7 @@ async function upsertUserProfile(userId, payload) {
       const newUserData = {
         ...profileData,
         created_at: new Date().toISOString(),
-        auth_type: "anonymous",
-        is_active: true,
+        // Убираем auth_type и is_active - их может не быть в схеме
       };
       result = await supabaseAdmin
         .from("users")

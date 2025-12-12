@@ -10,14 +10,12 @@ async function createAnonymousUser() {
       .from("users")
       .insert([
         {
-          auth_type: "anonymous",
-          email: null,
-          password_hash: null,
-          is_active: true,
+          // Убираем auth_type, email, password_hash, is_active - их может не быть в схеме
+          // Используем только обязательные поля или те, что точно есть
           profile_data: {},
         },
       ])
-      .select("id, auth_type")
+      .select("id")
       .single();
 
     if (error) {
@@ -33,7 +31,7 @@ async function createAnonymousUser() {
     return {
       data: {
         userId: data.id,
-        authType: data.auth_type,
+        authType: "anonymous", // Возвращаем как константу, не из БД
       },
       error: null,
     };
