@@ -6,15 +6,11 @@ const { supabaseAdmin } = require("../utils/supabaseClient");
  */
 async function createAnonymousUser() {
   try {
+    // Создаём пользователя с минимальными данными - только id (автогенерируется)
+    // Не передаём никаких полей, чтобы Supabase использовал значения по умолчанию
     const { data, error } = await supabaseAdmin
       .from("users")
-      .insert([
-        {
-          // Убираем auth_type, email, password_hash, is_active - их может не быть в схеме
-          // Используем только обязательные поля или те, что точно есть
-          profile_data: {},
-        },
-      ])
+      .insert([{}])
       .select("id")
       .single();
 
