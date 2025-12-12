@@ -183,7 +183,21 @@ async function generateWorkout({
   workoutType,
   profileData = null,
   ignoreHistory = false,
+  date = null, // Дата тренировки в формате YYYY-MM-DD (опционально, по умолчанию сегодня)
 }) {
+  const functionStartTime = Date.now();
+  console.log(`[aiService] 🚀 Starting generateWorkout for userId: ${userId || 'anonymous'}`);
+  console.log(`[aiService] Parameters:`, {
+    level,
+    equipment: equipment?.length || 0,
+    targetMuscles: targetMuscles?.length || 0,
+    goal,
+    durationMinutes,
+    exercisesCount,
+    workoutType,
+    date,
+  });
+
   try {
     // Сохраняем исходные параметры запроса для логирования
     const originalParams = {
@@ -498,13 +512,19 @@ IMPORTANT INSTRUCTIONS:
 
 Respond ONLY in valid JSON format.`;
 
-    const availableExercises = shuffledExercises.map((ex) => ({
+    // Ограничиваем количество упражнений в промпте для ускорения генерации
+    // Берем максимум 40 упражнений (достаточно для выбора 8)
+    const exercisesForPrompt = shuffledExercises.slice(0, 40);
+    
+    const availableExercises = exercisesForPrompt.map((ex) => ({
       slug: ex.slug,
       name_en: ex.name_en,
       main_muscle: ex.main_muscle,
       equipment: ex.equipment,
       level: ex.level,
     }));
+    
+    console.log(`[aiService] Using ${availableExercises.length} exercises in prompt (from ${shuffledExercises.length} total)`);
 
     // Формируем информацию об ограничениях из профиля
     let restrictionsInfo = "";
@@ -575,13 +595,18 @@ Return a JSON object with this exact structure:
 Return ONLY valid JSON, no markdown, no code blocks.`;
 
     // 6. Вызов OpenAI API
-    // Используем gpt-5.1 если доступен, иначе gpt-4o-mini
-    let model = "gpt-5.1";
-    // Fallback на gpt-4o-mini если gpt-5.1 недоступен (будет обработано в catch)
+    // Используем gpt-4o-mini (быстрая и дешевая модель)
+    const model = "gpt-4o-mini";
+    
+    console.log(`[aiService] Calling OpenAI API with model: ${model}`);
+    console.log(`[aiService] Prompt length: system=${systemPrompt.length}, user=${userPrompt.length}`);
+    console.log(`[aiService] Available exercises count: ${availableExercises.length}`);
 
     let completion;
+    const startTime = Date.now();
     try {
-      completion = await openai.chat.completions.create({
+      // Вызов OpenAI API с таймаутом через Promise.race
+      const apiCall = openai.chat.completions.create({
         model: model,
         messages: [
           { role: "system", content: systemPrompt },
@@ -590,22 +615,51 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
         response_format: { type: "json_object" },
         temperature: 0.7,
       });
-    } catch (modelError) {
-      // Если gpt-5.1 недоступен, используем gpt-4o-mini
-      if (modelError.message && modelError.message.includes("gpt-5.1")) {
-        model = "gpt-4o-mini";
-        completion = await openai.chat.completions.create({
-          model: model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          response_format: { type: "json_object" },
-          temperature: 0.7,
-        });
-      } else {
-        throw modelError;
+
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("OpenAI API request timeout after 60 seconds"));
+        }, 60000);
+      });
+
+      completion = await Promise.race([apiCall, timeoutPromise]);
+
+      const duration = Date.now() - startTime;
+      console.log(`[aiService] ✅ OpenAI API call successful (${duration}ms)`);
+    } catch (apiError) {
+      console.error(`[aiService] ❌ OpenAI API error:`, apiError);
+      console.error(`[aiService] Error message:`, apiError.message);
+      console.error(`[aiService] Error code:`, apiError.code);
+      console.error(`[aiService] Error stack:`, apiError.stack);
+      
+      // Обработка различных типов ошибок
+      if (apiError.message && apiError.message.includes("timeout")) {
+        return {
+          data: null,
+          error: {
+            message: "OpenAI API request timed out. Please try again.",
+            code: "TIMEOUT_ERROR",
+          },
+        };
       }
+      
+      if (apiError.message && apiError.message.includes("rate limit")) {
+        return {
+          data: null,
+          error: {
+            message: "OpenAI API rate limit exceeded. Please try again later.",
+            code: "RATE_LIMIT_ERROR",
+          },
+        };
+      }
+
+      return {
+        data: null,
+        error: {
+          message: `OpenAI API error: ${apiError.message || "Unknown error"}`,
+          code: "OPENAI_API_ERROR",
+        },
+      };
     }
 
     const responseContent = completion.choices[0].message.content;
@@ -698,7 +752,8 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
 
     // 9. Создание записи workouts в Supabase
     const workoutName = meta.title || `AI ${level} ${workoutType}`;
-    const workoutDate = new Date().toISOString().split("T")[0]; // Текущая дата в формате YYYY-MM-DD
+    // Используем переданную дату или текущую дату
+    const workoutDate = date || new Date().toISOString().split("T")[0]; // Дата в формате YYYY-MM-DD
 
     // Формируем notes как JSON с goal и description
     const notesData = {};
@@ -807,6 +862,10 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
     await logAIRequest(logUserId, "workout", requestData, responseData);
 
     // 12. Возвращаемое значение
+    const totalDuration = Date.now() - functionStartTime;
+    console.log(`[aiService] ✅ generateWorkout completed successfully in ${totalDuration}ms`);
+    console.log(`[aiService] Created workout ID: ${workoutId}, exercises: ${mappedPlan.length}`);
+    
     return {
       data: {
         workoutId,
@@ -822,7 +881,11 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       error: null,
     };
   } catch (err) {
-    console.error("Error in generateWorkout:", err);
+    const totalDuration = Date.now() - functionStartTime;
+    console.error(`[aiService] ❌ Error in generateWorkout after ${totalDuration}ms:`, err);
+    console.error(`[aiService] Error message:`, err.message);
+    console.error(`[aiService] Error stack:`, err.stack);
+    
     return {
       data: null,
       error: {

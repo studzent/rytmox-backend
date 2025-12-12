@@ -12,7 +12,8 @@ exports.getWorkout = async (req, res) => {
       return res.status(400).json({ error: "Workout ID is required" });
     }
 
-    const { data, error } = await workoutService.getWorkoutById(workoutId);
+    // Возвращаем в формате AIWorkoutResponse (как /ai/workout), чтобы фронт ждал plan
+    const { data, error } = await workoutService.getWorkoutByIdAI(workoutId);
 
     if (error) {
       console.error("Error getting workout:", error);

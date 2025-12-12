@@ -172,6 +172,51 @@ async function getWorkoutById(workoutId) {
 }
 
 /**
+ * Получение тренировки по ID в формате AIWorkoutResponse (как /ai/workout)
+ * Нужно для фронта: PlanScreen ожидает поле plan, а не exercises.
+ * @param {string} workoutId
+ * @returns {Promise<{data: object|null, error: object|null}>}
+ */
+async function getWorkoutByIdAI(workoutId) {
+  const { data: workoutDetails, error } = await getWorkoutById(workoutId);
+  if (error) return { data: null, error };
+  if (!workoutDetails) return { data: null, error: null };
+
+  const plan = (workoutDetails.exercises || []).map((ex) => ({
+    exercise_id: ex.exercise_id,
+    exercise_slug: ex.slug,
+    name_en: ex.name_en,
+    name_ru: ex.name_ru || null,
+    main_muscle: ex.main_muscle,
+    equipment: ex.equipment,
+    thumbnail_url: ex.thumbnail_url || null,
+    sets: ex.sets ?? null,
+    reps: ex.reps === null || ex.reps === undefined ? null : String(ex.reps),
+    rest_sec: ex.rest_sec ?? null,
+    tempo: ex.tempo ?? null,
+    notes: ex.notes ?? null,
+  }));
+
+  return {
+    data: {
+      workoutId: workoutDetails.id,
+      workout: {
+        id: workoutDetails.id,
+        title: workoutDetails.name,
+        goal: workoutDetails.goal || null,
+        userId: null,
+      },
+      plan,
+      meta: {
+        title: workoutDetails.name,
+        description: workoutDetails.description || undefined,
+      },
+    },
+    error: null,
+  };
+}
+
+/**
  * Получение списка тренировок пользователя (краткая информация)
  * @param {string} userId - UUID пользователя
  * @returns {Promise<{data: array|null, error: object|null}>}
@@ -406,7 +451,8 @@ async function getTodayWorkout(userId) {
       return { data: null, error: null };
     }
 
-    return await getWorkoutById(workout.id);
+    // Возвращаем в формате AIWorkoutResponse, чтобы фронт видел поле plan
+    return await getWorkoutByIdAI(workout.id);
   } catch (err) {
     console.error("Error in getTodayWorkout:", err);
     return {
@@ -421,6 +467,7 @@ async function getTodayWorkout(userId) {
 
 module.exports = {
   getWorkoutById,
+  getWorkoutByIdAI,
   getWorkoutsByUser,
   getUserWorkoutSessions,
   getTodayWorkout,
