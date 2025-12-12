@@ -251,6 +251,7 @@ async function upsertUserProfile(userId, payload) {
     }
 
     // Проверяем, существует ли пользователь
+    console.log(`[upsertUserProfile] Checking if user ${userId} exists...`);
     const { data: existingUser, error: checkError } = await supabaseAdmin
       .from("users")
       .select("id")
@@ -261,12 +262,14 @@ async function upsertUserProfile(userId, payload) {
       console.error("[upsertUserProfile] Error checking user existence:", checkError);
       return { data: null, error: checkError };
     }
+    
+    console.log(`[upsertUserProfile] User ${userId} ${existingUser ? 'exists' : 'does not exist'}`);
 
     let result;
     if (existingUser) {
       // Обновляем существующего пользователя
       console.log(`[upsertUserProfile] Updating existing user ${userId}`);
-      console.log(`[upsertUserProfile] Profile data keys:`, Object.keys(profileData));
+      console.log(`[upsertUserProfile] Profile data keys (${Object.keys(profileData).length} fields):`, Object.keys(profileData));
       console.log(`[upsertUserProfile] Profile data:`, JSON.stringify(profileData, null, 2));
       result = await supabaseAdmin
         .from("users")
