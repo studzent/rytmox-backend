@@ -244,6 +244,8 @@ async function upsertUserProfile(userId, payload) {
     if (existingUser) {
       // Обновляем существующего пользователя
       console.log(`[upsertUserProfile] Updating existing user ${userId}`);
+      console.log(`[upsertUserProfile] Profile data keys:`, Object.keys(profileData));
+      console.log(`[upsertUserProfile] Profile data:`, JSON.stringify(profileData, null, 2));
       result = await supabaseAdmin
         .from("users")
         .update(profileData)
@@ -259,6 +261,8 @@ async function upsertUserProfile(userId, payload) {
         created_at: new Date().toISOString(),
         // Убираем auth_type и is_active - их может не быть в схеме
       };
+      console.log(`[upsertUserProfile] New user data keys:`, Object.keys(newUserData));
+      console.log(`[upsertUserProfile] New user data:`, JSON.stringify(newUserData, null, 2));
       result = await supabaseAdmin
         .from("users")
         .insert([newUserData])
