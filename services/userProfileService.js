@@ -256,9 +256,9 @@ async function upsertUserProfile(userId, payload) {
       // Создаём нового пользователя (если его нет)
       console.log(`[upsertUserProfile] Creating new user ${userId}`);
       // Добавляем обязательные поля для нового пользователя
+      // created_at устанавливается автоматически в БД (DEFAULT NOW())
       const newUserData = {
         ...profileData,
-        created_at: new Date().toISOString(),
         // Убираем auth_type и is_active - их может не быть в схеме
       };
       console.log(`[upsertUserProfile] New user data keys:`, Object.keys(newUserData));
