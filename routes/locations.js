@@ -3,6 +3,11 @@ const router = express.Router();
 const locationController = require("../controllers/locationController");
 const { authOptional } = require("../middleware/authMiddleware");
 
+// Test route to verify router is working
+router.get("/test", (req, res) => {
+  res.json({ status: "locations router is working" });
+});
+
 // Location routes
 router.get("/", authOptional, locationController.listLocations);
 router.post("/", authOptional, locationController.createLocation);
