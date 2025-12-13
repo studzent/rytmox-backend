@@ -507,28 +507,61 @@ async function upsertUserProfile(userId, payload) {
     });
 
     // Сохраняем нормализованные поля (если они были в payload)
+    console.log(`[upsertUserProfile] Saving normalized fields:`, {
+      hasWeight: payload.weight_kg !== undefined,
+      weightValue: payload.weight_kg,
+      hasEquipment: payload.equipment_items !== undefined,
+      equipmentCount: Array.isArray(payload.equipment_items) ? payload.equipment_items.length : 0,
+      hasEnvironment: payload.training_environment !== undefined,
+      environmentValue: payload.training_environment,
+    });
+
     if (payload.weight_kg !== undefined) {
+      console.log(`[upsertUserProfile] Inserting weight measurement: ${payload.weight_kg} kg`);
       const { error: wErr } = await insertUserWeightMeasurement(userId, payload.weight_kg, "profile");
       if (wErr) {
-        console.warn("[upsertUserProfile] Failed to insert users_measurements:", wErr.message || wErr);
+        console.error("[upsertUserProfile] ❌ Failed to insert users_measurements:", {
+          message: wErr.message,
+          code: wErr.code,
+          details: wErr.details,
+          hint: wErr.hint,
+          fullError: JSON.stringify(wErr, null, 2),
+        });
+      } else {
+        console.log(`[upsertUserProfile] ✅ Successfully inserted weight measurement`);
       }
     }
     if (payload.equipment_items !== undefined) {
+      console.log(`[upsertUserProfile] Replacing equipment: ${Array.isArray(payload.equipment_items) ? payload.equipment_items.length : 0} items`);
       const { error: eErr } = await replaceUserEquipment(userId, payload.equipment_items);
       if (eErr) {
-        console.warn("[upsertUserProfile] Failed to replace users_equipment:", eErr.message || eErr);
+        console.error("[upsertUserProfile] ❌ Failed to replace users_equipment:", {
+          message: eErr.message,
+          code: eErr.code,
+          details: eErr.details,
+          hint: eErr.hint,
+          fullError: JSON.stringify(eErr, null, 2),
+        });
+      } else {
+        console.log(`[upsertUserProfile] ✅ Successfully replaced equipment`);
       }
     }
     if (payload.training_environment !== undefined) {
+      console.log(`[upsertUserProfile] Setting training environment: ${payload.training_environment}`);
       const { error: envErr } = await setUserActiveTrainingEnvironment(
         userId,
         payload.training_environment
       );
       if (envErr) {
-        console.warn(
-          "[upsertUserProfile] Failed to set users_training_environment_profiles:",
-          envErr.message || envErr
-        );
+        console.error("[upsertUserProfile] ❌ Failed to set users_training_environment_profiles:", {
+          message: envErr.message,
+          code: envErr.code,
+          details: envErr.details,
+          hint: envErr.hint,
+          fullError: JSON.stringify(envErr, null, 2),
+        });
+      } else {
+        console.log(`[upsertUserProfile] ✅ Successfully set training environment`);
       }
     }
 
