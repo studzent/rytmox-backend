@@ -381,12 +381,8 @@ async function upsertUserProfile(userId, payload) {
         };
       }
     }
-    if (payload.special_programs !== undefined) {
-      // Пустые массивы [] тоже сохраняем - это валидное значение
-      profileData.special_programs = Array.isArray(payload.special_programs)
-        ? payload.special_programs
-        : [];
-    }
+    // special_programs НЕ сохраняем в users - этого поля нет в таблице
+    // Они могут быть в payload для совместимости, но игнорируем их
     if (payload.training_days_per_week !== undefined) {
       if (
         payload.training_days_per_week !== null &&
