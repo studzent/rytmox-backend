@@ -10,10 +10,8 @@ async function getEquipmentItems(filters = {}) {
   try {
     let query = supabaseAdmin.from("equipment_items").select("*");
 
-    // Применяем фильтр по environment, если указан
-    if (filters.environment) {
-      query = query.eq("environment", filters.environment);
-    }
+    // НЕ фильтруем на уровне SQL - сделаем фильтрацию после загрузки
+    // Это нужно, чтобы правильно обработать environment='gym_home_workout', 'all' и т.д.
 
     // Сортировка: environment ASC, name_en ASC
     query = query.order("environment", { ascending: true });
@@ -31,8 +29,27 @@ async function getEquipmentItems(filters = {}) {
       };
     }
 
-    // Формируем ответ с нужными полями
-    const equipmentList = (equipmentItems || []).map((item) => ({
+    // Фильтруем по environment после загрузки (чтобы учесть gym_home_workout, all и т.д.)
+    let filteredItems = equipmentItems || [];
+    if (filters.environment) {
+      filteredItems = filteredItems.filter((item) => {
+        const env = item.environment || '';
+        // Точное совпадение
+        if (env === filters.environment) return true;
+        // Универсальное оборудование
+        if (env === 'gym_home_workout' || env === 'all') return true;
+        // Для workout показываем также outdoor
+        if (filters.environment === 'workout' && env === 'outdoor') return true;
+        // Для home показываем также gym_home
+        if (filters.environment === 'home' && (env === 'gym_home' || env === 'home_gym')) return true;
+        // Для gym показываем также gym_home
+        if (filters.environment === 'gym' && (env === 'gym_home' || env === 'home_gym')) return true;
+        return false;
+      });
+    }
+
+    // Формируем ответ с нужными полями, ВКЛЮЧАЯ equipment_group
+    const equipmentList = filteredItems.map((item) => ({
       slug: item.slug,
       name_en: item.name_en,
       name_ru: item.name_ru,
@@ -40,6 +57,7 @@ async function getEquipmentItems(filters = {}) {
       image_url: item.image_url || null,
       description_en: item.description_en || null,
       description_ru: item.description_ru || null,
+      equipment_group: item.equipment_group || null, // ВАЖНО: добавляем equipment_group для группировки на фронтенде
     }));
 
     return {
