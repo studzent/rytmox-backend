@@ -624,20 +624,70 @@ async function upsertUserProfile(userId, payload) {
     }
     if (payload.training_environment !== undefined) {
       console.log(`[upsertUserProfile] Setting training environment: ${payload.training_environment}`);
-      const { error: envErr } = await setUserActiveTrainingEnvironment(
-        userId,
-        payload.training_environment
-      );
-      if (envErr) {
-        console.error("[upsertUserProfile] ❌ Failed to set users_training_environment_profiles:", {
-          message: envErr.message,
-          code: envErr.code,
-          details: envErr.details,
-          hint: envErr.hint,
-          fullError: JSON.stringify(envErr, null, 2),
-        });
+      
+      // Если есть equipment_items, создаем профиль с тренажерами
+      if (payload.equipment_items && Array.isArray(payload.equipment_items) && payload.equipment_items.length > 0) {
+        const trainingEnvironmentService = require("./trainingEnvironmentService");
+        
+        // Определяем название профиля на основе окружения
+        const envNameMap = {
+          home: "Дом",
+          gym: "Тренажерный зал",
+          workout: "Воркаут",
+          outdoor: "Воркаут",
+        };
+        const profileName = envNameMap[payload.training_environment] || "Мой зал";
+        
+        console.log(`[upsertUserProfile] Creating profile with equipment: ${profileName}, ${payload.equipment_items.length} items`);
+        
+        // Создаем профиль с тренажерами
+        const { data: profileData, error: createErr } = await trainingEnvironmentService.createProfile(
+          userId,
+          profileName,
+          payload.training_environment,
+          payload.equipment_items
+        );
+        
+        if (createErr) {
+          console.error("[upsertUserProfile] ❌ Failed to create training environment profile:", {
+            message: createErr.message,
+            code: createErr.code,
+            details: createErr.details,
+            hint: createErr.hint,
+            fullError: JSON.stringify(createErr, null, 2),
+          });
+        } else {
+          console.log(`[upsertUserProfile] ✅ Successfully created training environment profile: ${profileData?.id}`);
+          
+          // Активируем созданный профиль
+          const { error: activateErr } = await trainingEnvironmentService.activateProfile(
+            userId,
+            profileData.id
+          );
+          
+          if (activateErr) {
+            console.error("[upsertUserProfile] ❌ Failed to activate profile:", activateErr.message);
+          } else {
+            console.log(`[upsertUserProfile] ✅ Successfully activated profile`);
+          }
+        }
       } else {
-        console.log(`[upsertUserProfile] ✅ Successfully set training environment`);
+        // Если нет тренажеров, используем старую логику (базовый профиль)
+        const { error: envErr } = await setUserActiveTrainingEnvironment(
+          userId,
+          payload.training_environment
+        );
+        if (envErr) {
+          console.error("[upsertUserProfile] ❌ Failed to set users_training_environment_profiles:", {
+            message: envErr.message,
+            code: envErr.code,
+            details: envErr.details,
+            hint: envErr.hint,
+            fullError: JSON.stringify(envErr, null, 2),
+          });
+        } else {
+          console.log(`[upsertUserProfile] ✅ Successfully set training environment`);
+        }
       }
     }
 
