@@ -62,6 +62,26 @@ async function getEquipmentItems(filters = {}) {
       equipment_group: item.equipment_group || null, // ВАЖНО: добавляем equipment_group для группировки на фронтенде
     }));
 
+    // Логирование для диагностики групп брусьев и турников
+    const dipPushItems = equipmentList.filter(item => {
+      const group = (item.equipment_group || '').toLowerCase();
+      return group.includes('dip') || group.includes('push');
+    });
+    const pullUpItems = equipmentList.filter(item => {
+      const group = (item.equipment_group || '').toLowerCase();
+      return group.includes('pull-up') || group.includes('hanging');
+    });
+    
+    if (filters.environment) {
+      console.log(`[equipmentService] Equipment for environment "${filters.environment}":`, {
+        totalItems: equipmentList.length,
+        dipPushItems: dipPushItems.length,
+        pullUpItems: pullUpItems.length,
+        dipPushGroups: [...new Set(dipPushItems.map(i => i.equipment_group))],
+        pullUpGroups: [...new Set(pullUpItems.map(i => i.equipment_group))],
+      });
+    }
+
     return {
       data: equipmentList,
       error: null,
