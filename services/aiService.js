@@ -329,7 +329,7 @@ async function generateWorkout({
     }
 
     // Фильтрация по оборудованию
-    // ВАЖНО: Пользователь выбирает equipment_items (slug-ы), которые сохраняются в users.equipment_items
+    // ВАЖНО: Пользователь выбирает equipment_items (slug-ы), которые сохраняются в users_equipment
     // В таблице exercises есть поле required_equipment_items (массив slug-ов)
     // Мы НЕ фильтруем на уровне SQL, так как фильтрация массивов сложна
     // Вместо этого загружаем все упражнения и фильтруем в JavaScript
