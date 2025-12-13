@@ -100,7 +100,17 @@ async function setUserActiveTrainingEnvironment(userId, envRaw) {
       },
     ]);
 
-  return { error: insErr || null };
+  if (insErr) {
+    return {
+      error: {
+        message: insErr.message || "Failed to insert users_training_environment_profiles row",
+        code: insErr.code || "DATABASE_ERROR",
+        details: insErr.details || null,
+        hint: insErr.hint || null,
+      },
+    };
+  }
+  return { error: null };
 }
 
 async function replaceUserEquipment(userId, equipmentSlugs) {
@@ -128,7 +138,17 @@ async function replaceUserEquipment(userId, equipmentSlugs) {
   }));
 
   const { error: insErr } = await supabaseAdmin.from("users_equipment").insert(rows);
-  return { error: insErr || null };
+  if (insErr) {
+    return {
+      error: {
+        message: insErr.message || "Failed to insert users_equipment rows",
+        code: insErr.code || "DATABASE_ERROR",
+        details: insErr.details || null,
+        hint: insErr.hint || null,
+      },
+    };
+  }
+  return { error: null };
 }
 
 async function insertUserWeightMeasurement(userId, weightKg, source = "profile") {
