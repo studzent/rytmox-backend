@@ -1,4 +1,5 @@
 const { supabaseAdmin } = require("../utils/supabaseClient");
+const crypto = require("crypto");
 
 /**
  * Добавление новой метрики тела пользователя
@@ -38,6 +39,7 @@ async function addBodyMetric({ userId, weightKg, bodyFatPct, recordedAt, notes, 
 
     // users_measurements: (id uuid, user_id uuid, measured_at timestamptz, weight_kg numeric, source text)
     const measurementRow = {
+      id: crypto.randomUUID(),
       user_id: userId,
       measured_at: measuredAtValue,
       weight_kg: weightKg,

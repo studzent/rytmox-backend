@@ -1,4 +1,5 @@
 const { supabaseAdmin } = require("../utils/supabaseClient");
+const crypto = require("crypto");
 
 function dbEnvFromApi(env) {
   if (!env) return null;
@@ -141,13 +142,25 @@ async function insertUserWeightMeasurement(userId, weightKg, source = "profile")
     };
   }
   const row = {
+    id: crypto.randomUUID(),
     user_id: userId,
     measured_at: new Date().toISOString(),
     weight_kg: Number(weightKg),
     source,
   };
   const { error } = await supabaseAdmin.from("users_measurements").insert([row]);
-  return { error: error || null };
+  if (error) {
+    // Важно: часто причина — отсутствие DEFAULT для id в таблице users_measurements
+    return {
+      error: {
+        message: error.message || "Failed to insert users_measurements row",
+        code: error.code || "DATABASE_ERROR",
+        details: error.details || null,
+        hint: error.hint || null,
+      },
+    };
+  }
+  return { error: null };
 }
 
 /**
