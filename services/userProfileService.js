@@ -561,17 +561,26 @@ async function upsertUserProfile(userId, payload) {
     }
 
     console.log(`[upsertUserProfile] ✅ Successfully saved profile for user ${userId}`);
+    console.log(`[upsertUserProfile] ===== SAVED TO DATABASE =====`);
     console.log(`[upsertUserProfile] Saved data keys (${Object.keys(result.data || {}).length}):`, Object.keys(result.data || {}));
+    console.log(`[upsertUserProfile] Full saved data:`, JSON.stringify(result.data, null, 2));
     console.log(`[upsertUserProfile] Saved profile summary:`, {
       id: result.data?.id,
       name: result.data?.name,
       gender: result.data?.gender,
       level: result.data?.level,
       goal: result.data?.goal,
+      training_days_per_week: result.data?.training_days_per_week,
       height_cm: result.data?.height_cm,
+      coach_style: result.data?.coach_style,
+      date_of_birth: result.data?.date_of_birth,
       goals_count: Array.isArray(result.data?.goals) ? result.data.goals.length : 0,
+      notifications_enabled: result.data?.notifications_enabled,
+      nutrition_enabled: result.data?.nutrition_enabled,
+      current_step: result.data?.current_step,
       hasEmail: !!result.data?.email,
     });
+    console.log(`[upsertUserProfile] ===== END =====`);
 
     // Сохраняем нормализованные поля (если они были в payload)
     console.log(`[upsertUserProfile] Saving normalized fields:`, {
