@@ -276,9 +276,29 @@ async function upsertUserProfile(userId, payload) {
 
     // Подготовка данных для update/insert
     // Сохраняем данные в отдельные колонки таблицы users
+    console.log(`[upsertUserProfile] ===== START =====`);
     console.log(`[upsertUserProfile] Starting profile update for user ${userId}`);
-    console.log(`[upsertUserProfile] Received payload keys:`, Object.keys(payload));
-    console.log(`[upsertUserProfile] Received payload:`, JSON.stringify(payload, null, 2));
+    console.log(`[upsertUserProfile] Received payload keys (${Object.keys(payload).length}):`, Object.keys(payload));
+    console.log(`[upsertUserProfile] Full received payload:`, JSON.stringify(payload, null, 2));
+    console.log(`[upsertUserProfile] Payload field values:`, {
+      level: payload.level,
+      goal: payload.goal,
+      name: payload.name,
+      gender: payload.gender,
+      training_days_per_week: payload.training_days_per_week,
+      training_environment: payload.training_environment,
+      weight_kg: payload.weight_kg,
+      height_cm: payload.height_cm,
+      equipment_items_count: Array.isArray(payload.equipment_items) ? payload.equipment_items.length : 0,
+      goals_count: Array.isArray(payload.goals) ? payload.goals.length : 0,
+      coach_style: payload.coach_style,
+      date_of_birth: payload.date_of_birth,
+      notifications_enabled: payload.notifications_enabled,
+      nutrition_enabled: payload.nutrition_enabled,
+      current_step: payload.current_step,
+      hasRestrictions: !!payload.restrictions,
+      hasContraindications: !!payload.contraindications,
+    });
     
     const profileData = {
       // id не добавляем - он используется только для WHERE в UPDATE или INSERT
@@ -440,14 +460,36 @@ async function upsertUserProfile(userId, payload) {
     }
 
     // Логируем, что собрали в profileData
-    console.log(`[upsertUserProfile] Profile data prepared:`, {
-      keysCount: Object.keys(profileData).length,
-      keys: Object.keys(profileData),
+    console.log(`[upsertUserProfile] ===== PROFILE DATA PREPARED =====`);
+    console.log(`[upsertUserProfile] Profile data keys (${Object.keys(profileData).length}):`, Object.keys(profileData));
+    console.log(`[upsertUserProfile] Full profileData:`, JSON.stringify(profileData, null, 2));
+    console.log(`[upsertUserProfile] Profile data field values:`, {
       hasGender: 'gender' in profileData,
+      gender: profileData.gender,
       hasName: 'name' in profileData,
+      name: profileData.name,
       hasLevel: 'level' in profileData,
+      level: profileData.level,
       hasGoal: 'goal' in profileData,
-      profileData: JSON.stringify(profileData, null, 2),
+      goal: profileData.goal,
+      hasTrainingDaysPerWeek: 'training_days_per_week' in profileData,
+      training_days_per_week: profileData.training_days_per_week,
+      hasHeightCm: 'height_cm' in profileData,
+      height_cm: profileData.height_cm,
+      hasCoachStyle: 'coach_style' in profileData,
+      coach_style: profileData.coach_style,
+      hasDateOfBirth: 'date_of_birth' in profileData,
+      date_of_birth: profileData.date_of_birth,
+      hasGoals: 'goals' in profileData,
+      goals_count: Array.isArray(profileData.goals) ? profileData.goals.length : 0,
+      hasNotificationsEnabled: 'notifications_enabled' in profileData,
+      notifications_enabled: profileData.notifications_enabled,
+      hasNutritionEnabled: 'nutrition_enabled' in profileData,
+      nutrition_enabled: profileData.nutrition_enabled,
+      hasCurrentStep: 'current_step' in profileData,
+      current_step: profileData.current_step,
+      hasRestrictions: 'restrictions' in profileData,
+      hasContraindications: 'contraindications' in profileData,
     });
 
     // Проверяем, существует ли пользователь
