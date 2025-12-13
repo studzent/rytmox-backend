@@ -292,18 +292,8 @@ async function upsertUserProfile(userId, payload) {
     if (payload.goal !== undefined) {
       profileData.goal = payload.goal;
     }
-    if (payload.preferred_equipment !== undefined) {
-      // Пустые массивы [] тоже сохраняем - это валидное значение
-      profileData.preferred_equipment = Array.isArray(payload.preferred_equipment)
-        ? payload.preferred_equipment
-        : [];
-    }
-    if (payload.preferred_muscles !== undefined) {
-      // Пустые массивы [] тоже сохраняем - это валидное значение
-      profileData.preferred_muscles = Array.isArray(payload.preferred_muscles)
-        ? payload.preferred_muscles
-        : [];
-    }
+    // preferred_equipment и preferred_muscles НЕ сохраняем в users - этих полей нет в таблице
+    // Они могут быть в payload для совместимости, но игнорируем их
     if (payload.language !== undefined) {
       profileData.language = payload.language;
     }
