@@ -5,10 +5,10 @@ const { supabaseAdmin } = require("../utils/supabaseClient");
  * @param {object} params - Параметры метрики
  * @param {string} params.userId - ID пользователя (UUID)
  * @param {number} params.weightKg - Вес в килограммах
- * @param {number} [params.bodyFatPct] - Процент жира (опционально)
+ * @param {number} [params.bodyFatPct] - Процент жира (не поддерживается в users_measurements, игнорируется)
  * @param {string} [params.recordedAt] - Дата и время фиксации (ISO string, опционально, по умолчанию now())
- * @param {string} [params.notes] - Заметки (опционально)
- * @param {number} [params.heightCm] - Рост в сантиметрах (опционально, обновит профиль)
+ * @param {string} [params.notes] - Заметки (не поддерживается в users_measurements, игнорируется)
+ * @param {number} [params.heightCm] - Рост в сантиметрах (не поддерживается в users_measurements, игнорируется)
  * @returns {Promise<{data: object|null, error: object|null}>}
  */
 async function addBodyMetric({ userId, weightKg, bodyFatPct, recordedAt, notes, heightCm }) {
@@ -34,26 +34,28 @@ async function addBodyMetric({ userId, weightKg, bodyFatPct, recordedAt, notes, 
     }
 
     // Используем переданную дату или текущее время
-    const recordedAtValue = recordedAt || new Date().toISOString();
+    const measuredAtValue = recordedAt || new Date().toISOString();
 
-    // 1. Создаём запись в user_body_metrics
-    const metricData = {
+    // users_measurements: (id uuid, user_id uuid, measured_at timestamptz, weight_kg numeric, source text)
+    const measurementRow = {
       user_id: userId,
+      measured_at: measuredAtValue,
       weight_kg: weightKg,
-      recorded_at: recordedAtValue,
+      source: "metrics",
     };
 
-    if (bodyFatPct !== undefined && bodyFatPct !== null) {
-      metricData.body_fat_pct = bodyFatPct;
+    // Поля bodyFatPct/notes/heightCm в users_measurements не поддерживаются — логируем для отладки
+    if (bodyFatPct !== undefined || notes !== undefined || heightCm !== undefined) {
+      console.log("[userMetricsService.addBodyMetric] Ignoring unsupported fields for users_measurements:", {
+        hasBodyFatPct: bodyFatPct !== undefined,
+        hasNotes: notes !== undefined,
+        hasHeightCm: heightCm !== undefined,
+      });
     }
 
-    if (notes !== undefined && notes !== null) {
-      metricData.notes = notes;
-    }
-
-    const { data: metric, error: metricError } = await supabaseAdmin
-      .from("user_body_metrics")
-      .insert([metricData])
+    const { data: measurement, error: metricError } = await supabaseAdmin
+      .from("users_measurements")
+      .insert([measurementRow])
       .select()
       .single();
 
@@ -61,44 +63,16 @@ async function addBodyMetric({ userId, weightKg, bodyFatPct, recordedAt, notes, 
       return {
         data: null,
         error: {
-          message: `Failed to create body metric: ${metricError.message}`,
+          message: `Failed to create measurement: ${metricError.message}`,
           code: "DATABASE_ERROR",
         },
       };
     }
 
-    // 2. Обновляем user_profiles.weight_kg (и опционально height_cm)
-    const profileUpdate = {
-      weight_kg: weightKg,
-    };
-
-    if (heightCm !== undefined && heightCm !== null && heightCm > 0) {
-      profileUpdate.height_cm = heightCm;
-    }
-
-    const { error: profileError } = await supabaseAdmin
-      .from("user_profiles")
-      .upsert(
-        {
-          user_id: userId,
-          ...profileUpdate,
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "user_id",
-          ignoreDuplicates: false,
-        }
-      );
-
-    if (profileError) {
-      // Логируем ошибку, но не прерываем выполнение (метрика уже создана)
-      console.warn(`Failed to update user profile weight: ${profileError.message}`);
-    }
-
     return {
       data: {
-        metric: metric,
-        profileUpdated: !profileError,
+        metric: measurement,
+        profileUpdated: false,
       },
       error: null,
     };
@@ -131,10 +105,10 @@ async function getLatestBodyMetric(userId) {
     }
 
     const { data, error } = await supabaseAdmin
-      .from("user_body_metrics")
+      .from("users_measurements")
       .select("*")
       .eq("user_id", userId)
-      .order("recorded_at", { ascending: false })
+      .order("measured_at", { ascending: false })
       .limit(1)
       .single();
 
@@ -182,17 +156,17 @@ async function getBodyMetricHistory(userId, options = {}) {
     const { limit = 30, from, to } = options;
 
     let query = supabaseAdmin
-      .from("user_body_metrics")
+      .from("users_measurements")
       .select("*")
       .eq("user_id", userId)
-      .order("recorded_at", { ascending: false });
+      .order("measured_at", { ascending: false });
 
     // Фильтрация по дате
     if (from) {
-      query = query.gte("recorded_at", from);
+      query = query.gte("measured_at", from);
     }
     if (to) {
-      query = query.lte("recorded_at", to);
+      query = query.lte("measured_at", to);
     }
 
     // Лимит

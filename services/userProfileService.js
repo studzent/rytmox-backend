@@ -1,5 +1,155 @@
 const { supabaseAdmin } = require("../utils/supabaseClient");
 
+function dbEnvFromApi(env) {
+  if (!env) return null;
+  // Для совместимости: фронт исторически шлет "outdoor", а в БД у вас "workout"
+  if (env === "outdoor") return "workout";
+  return env;
+}
+
+function apiEnvFromDb(env) {
+  if (!env) return null;
+  // Для совместимости с текущим Expo: "workout" отдаём как "outdoor"
+  if (env === "workout") return "outdoor";
+  return env;
+}
+
+async function getLatestUserWeightKg(userId) {
+  const { data, error } = await supabaseAdmin
+    .from("users_measurements")
+    .select("weight_kg")
+    .eq("user_id", userId)
+    .order("measured_at", { ascending: false })
+    .limit(1);
+  if (error) return { data: null, error };
+  return { data: data?.[0]?.weight_kg ?? null, error: null };
+}
+
+async function getUserActiveEquipmentSlugs(userId) {
+  const { data, error } = await supabaseAdmin
+    .from("users_equipment")
+    .select("equipment_item_slug, availability, active")
+    .eq("user_id", userId)
+    .eq("active", true);
+
+  if (error) return { data: null, error };
+  return {
+    data: (data || [])
+      .filter((r) => (r.availability ? r.availability !== "unavailable" : true))
+      .map((r) => r.equipment_item_slug)
+      .filter(Boolean),
+    error: null,
+  };
+}
+
+async function getUserActiveTrainingEnvironmentSlug(userId) {
+  const { data: linkRows, error: linkErr } = await supabaseAdmin
+    .from("users_training_environment_profiles")
+    .select("training_environment_profile_id")
+    .eq("user_id", userId)
+    .eq("active", true)
+    .order("added_at", { ascending: false })
+    .limit(1);
+
+  if (linkErr) return { data: null, error: linkErr };
+  const profileId = linkRows?.[0]?.training_environment_profile_id;
+  if (!profileId) return { data: null, error: null };
+
+  const { data: profile, error: profErr } = await supabaseAdmin
+    .from("training_environment_profiles")
+    .select("slug")
+    .eq("id", profileId)
+    .single();
+
+  if (profErr) return { data: null, error: profErr };
+  return { data: profile?.slug ?? null, error: null };
+}
+
+async function setUserActiveTrainingEnvironment(userId, envRaw) {
+  const envSlug = dbEnvFromApi(envRaw);
+  if (!envSlug) return { error: null };
+
+  const { data: envProfile, error: envErr } = await supabaseAdmin
+    .from("training_environment_profiles")
+    .select("id, slug")
+    .eq("slug", envSlug)
+    .single();
+  if (envErr) return { error: envErr };
+
+  const { error: deactErr } = await supabaseAdmin
+    .from("users_training_environment_profiles")
+    .update({ active: false })
+    .eq("user_id", userId);
+  if (deactErr) return { error: deactErr };
+
+  await supabaseAdmin
+    .from("users_training_environment_profiles")
+    .delete()
+    .eq("user_id", userId)
+    .eq("training_environment_profile_id", envProfile.id);
+
+  const { error: insErr } = await supabaseAdmin
+    .from("users_training_environment_profiles")
+    .insert([
+      {
+        user_id: userId,
+        training_environment_profile_id: envProfile.id,
+        active: true,
+        added_at: new Date().toISOString(),
+      },
+    ]);
+
+  return { error: insErr || null };
+}
+
+async function replaceUserEquipment(userId, equipmentSlugs) {
+  const { error: deactErr } = await supabaseAdmin
+    .from("users_equipment")
+    .update({ active: false })
+    .eq("user_id", userId);
+  if (deactErr) return { error: deactErr };
+
+  const slugs = Array.isArray(equipmentSlugs) ? equipmentSlugs.filter(Boolean) : [];
+  if (slugs.length === 0) return { error: null };
+
+  await supabaseAdmin
+    .from("users_equipment")
+    .delete()
+    .eq("user_id", userId)
+    .in("equipment_item_slug", slugs);
+
+  const rows = slugs.map((slug) => ({
+    user_id: userId,
+    equipment_item_slug: slug,
+    availability: "available",
+    active: true,
+    added_at: new Date().toISOString(),
+  }));
+
+  const { error: insErr } = await supabaseAdmin.from("users_equipment").insert(rows);
+  return { error: insErr || null };
+}
+
+async function insertUserWeightMeasurement(userId, weightKg, source = "profile") {
+  if (weightKg === undefined || weightKg === null) return { error: null };
+  if (isNaN(weightKg) || Number(weightKg) <= 0) {
+    return {
+      error: {
+        message: "weight_kg must be a positive number or null",
+        code: "VALIDATION_ERROR",
+      },
+    };
+  }
+  const row = {
+    user_id: userId,
+    measured_at: new Date().toISOString(),
+    weight_kg: Number(weightKg),
+    source,
+  };
+  const { error } = await supabaseAdmin.from("users_measurements").insert([row]);
+  return { error: error || null };
+}
+
 /**
  * Получение профиля пользователя
  * @param {string} userId - ID пользователя (UUID)
@@ -31,7 +181,34 @@ async function getUserProfile(userId) {
       return { data: null, error };
     }
 
-    return { data, error: null };
+    const [weightRes, equipmentRes, envRes] = await Promise.all([
+      getLatestUserWeightKg(userId),
+      getUserActiveEquipmentSlugs(userId),
+      getUserActiveTrainingEnvironmentSlug(userId),
+    ]);
+
+    if (weightRes.error) {
+      console.warn("[getUserProfile] Failed to load users_measurements:", weightRes.error.message);
+    }
+    if (equipmentRes.error) {
+      console.warn("[getUserProfile] Failed to load users_equipment:", equipmentRes.error.message);
+    }
+    if (envRes.error) {
+      console.warn(
+        "[getUserProfile] Failed to load users_training_environment_profiles:",
+        envRes.error.message
+      );
+    }
+
+    return {
+      data: {
+        ...data,
+        weight_kg: weightRes.data ?? null,
+        equipment_items: equipmentRes.data ?? [],
+        training_environment: apiEnvFromDb(envRes.data),
+      },
+      error: null,
+    };
   } catch (err) {
     return {
       data: null,
@@ -117,8 +294,10 @@ async function upsertUserProfile(userId, payload) {
         console.warn(`[upsertUserProfile] Cannot add equipment_weights: restrictions is not a valid object`);
       }
     }
+    // training_environment/equipment_items/weight_kg НЕ пишем в users.
+    // Они сохраняются в нормализованные таблицы: users_training_environment_profiles, users_equipment, users_measurements.
     if (payload.training_environment !== undefined) {
-      const validEnvironments = ["home", "gym", "outdoor"];
+      const validEnvironments = ["home", "gym", "outdoor", "workout"];
       if (payload.training_environment && !validEnvironments.includes(payload.training_environment)) {
         return {
           data: null,
@@ -128,26 +307,17 @@ async function upsertUserProfile(userId, payload) {
           },
         };
       }
-      profileData.training_environment = payload.training_environment;
     }
-    if (payload.equipment_items !== undefined) {
-      // Пустые массивы [] тоже сохраняем - это валидное значение
-      profileData.equipment_items = Array.isArray(payload.equipment_items)
-        ? payload.equipment_items
-        : [];
+    if (payload.equipment_items !== undefined && !Array.isArray(payload.equipment_items)) {
+      return {
+        data: null,
+        error: {
+          message: "equipment_items must be an array of strings",
+          code: "VALIDATION_ERROR",
+        },
+      };
     }
-    if (payload.weight_kg !== undefined) {
-      if (payload.weight_kg !== null && (isNaN(payload.weight_kg) || payload.weight_kg <= 0)) {
-        return {
-          data: null,
-          error: {
-            message: "weight_kg must be a positive number or null",
-            code: "VALIDATION_ERROR",
-          },
-        };
-      }
-      profileData.weight_kg = payload.weight_kg;
-    }
+    // weight_kg валидируем при insertUserWeightMeasurement
     if (payload.height_cm !== undefined) {
       if (payload.height_cm !== null && (isNaN(payload.height_cm) || payload.height_cm <= 0)) {
         return {
@@ -319,12 +489,42 @@ async function upsertUserProfile(userId, payload) {
       name: result.data?.name,
       level: result.data?.level,
       goal: result.data?.goal,
-      weight_kg: result.data?.weight_kg,
       height_cm: result.data?.height_cm,
-      equipment_items_count: Array.isArray(result.data?.equipment_items) ? result.data.equipment_items.length : 0,
       goals_count: Array.isArray(result.data?.goals) ? result.data.goals.length : 0,
     });
-    return { data: result.data, error: null };
+
+    // Сохраняем нормализованные поля (если они были в payload)
+    if (payload.weight_kg !== undefined) {
+      const { error: wErr } = await insertUserWeightMeasurement(userId, payload.weight_kg, "profile");
+      if (wErr) {
+        console.warn("[upsertUserProfile] Failed to insert users_measurements:", wErr.message || wErr);
+      }
+    }
+    if (payload.equipment_items !== undefined) {
+      const { error: eErr } = await replaceUserEquipment(userId, payload.equipment_items);
+      if (eErr) {
+        console.warn("[upsertUserProfile] Failed to replace users_equipment:", eErr.message || eErr);
+      }
+    }
+    if (payload.training_environment !== undefined) {
+      const { error: envErr } = await setUserActiveTrainingEnvironment(
+        userId,
+        payload.training_environment
+      );
+      if (envErr) {
+        console.warn(
+          "[upsertUserProfile] Failed to set users_training_environment_profiles:",
+          envErr.message || envErr
+        );
+      }
+    }
+
+    // Возвращаем обогащенный профиль, чтобы /profile был консистентен
+    const { data: enriched, error: enrErr } = await getUserProfile(userId);
+    if (enrErr) {
+      return { data: result.data, error: null };
+    }
+    return { data: enriched, error: null };
   } catch (err) {
     return {
       data: null,

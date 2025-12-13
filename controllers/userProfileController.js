@@ -30,7 +30,7 @@ exports.getProfile = async (req, res) => {
 
     // Формируем ответ в нужном формате
     const response = {
-      userId: data.user_id,
+      userId: data.id || data.user_id,
       level: data.level || null,
       goal: data.goal || null,
       preferred_equipment: data.preferred_equipment || [],
@@ -82,10 +82,10 @@ exports.updateProfile = async (req, res) => {
 
     if (
       payload.training_environment &&
-      !["home", "gym", "outdoor"].includes(payload.training_environment)
+      !["home", "gym", "outdoor", "workout"].includes(payload.training_environment)
     ) {
       return res.status(400).json({
-        error: "training_environment must be one of: home, gym, outdoor",
+        error: "training_environment must be one of: home, gym, outdoor, workout",
       });
     }
 
@@ -105,7 +105,7 @@ exports.updateProfile = async (req, res) => {
 
     // Формируем ответ в нужном формате
     const response = {
-      userId: data.user_id,
+      userId: data.id || data.user_id,
       level: data.level || null,
       goal: data.goal || null,
       preferred_equipment: data.preferred_equipment || [],
