@@ -453,6 +453,17 @@ async function upsertUserProfile(userId, payload) {
       profileData.current_step = payload.current_step;
     }
 
+    // Логируем, что собрали в profileData
+    console.log(`[upsertUserProfile] Profile data prepared:`, {
+      keysCount: Object.keys(profileData).length,
+      keys: Object.keys(profileData),
+      hasGender: 'gender' in profileData,
+      hasName: 'name' in profileData,
+      hasLevel: 'level' in profileData,
+      hasGoal: 'goal' in profileData,
+      profileData: JSON.stringify(profileData, null, 2),
+    });
+
     // Проверяем, существует ли пользователь
     console.log(`[upsertUserProfile] Checking if user ${userId} exists...`);
     const { data: existingUser, error: checkError } = await supabaseAdmin
@@ -497,11 +508,12 @@ async function upsertUserProfile(userId, payload) {
         ...profileData,
         // Убираем auth_type и is_active - их может не быть в схеме
       };
-      console.log(`[upsertUserProfile] New user data keys:`, Object.keys(newUserData));
+      console.log(`[upsertUserProfile] New user data keys (${Object.keys(newUserData).length} total):`, Object.keys(newUserData));
       console.log(`[upsertUserProfile] New user data (excluding sensitive):`, JSON.stringify({
         ...newUserData,
         password_hash: '[REDACTED]'
       }, null, 2));
+      console.log(`[upsertUserProfile] About to INSERT into users table...`);
       result = await supabaseAdmin
         .from("users")
         .insert([newUserData])
@@ -510,20 +522,27 @@ async function upsertUserProfile(userId, payload) {
     }
 
     if (result.error) {
-      console.error("[upsertUserProfile] Error saving profile:", result.error);
-      console.error("[upsertUserProfile] Error details:", JSON.stringify(result.error, null, 2));
+      console.error("[upsertUserProfile] ❌ Error saving profile:", {
+        message: result.error.message,
+        code: result.error.code,
+        details: result.error.details,
+        hint: result.error.hint,
+        fullError: JSON.stringify(result.error, null, 2),
+      });
       return { data: null, error: result.error };
     }
 
     console.log(`[upsertUserProfile] ✅ Successfully saved profile for user ${userId}`);
-    console.log(`[upsertUserProfile] Saved data keys:`, Object.keys(result.data || {}));
+    console.log(`[upsertUserProfile] Saved data keys (${Object.keys(result.data || {}).length}):`, Object.keys(result.data || {}));
     console.log(`[upsertUserProfile] Saved profile summary:`, {
       id: result.data?.id,
       name: result.data?.name,
+      gender: result.data?.gender,
       level: result.data?.level,
       goal: result.data?.goal,
       height_cm: result.data?.height_cm,
       goals_count: Array.isArray(result.data?.goals) ? result.data.goals.length : 0,
+      hasEmail: !!result.data?.email,
     });
 
     // Сохраняем нормализованные поля (если они были в payload)
