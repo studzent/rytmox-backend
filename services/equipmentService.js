@@ -36,6 +36,8 @@ async function getEquipmentItems(filters = {}) {
         const env = item.environment || '';
         // Точное совпадение
         if (env === filters.environment) return true;
+        // Совместимость: фронт шлет "outdoor", а в БД используется "workout"
+        if (filters.environment === 'outdoor' && env === 'workout') return true;
         // Универсальное оборудование
         if (env === 'gym_home_workout' || env === 'all') return true;
         // Для workout показываем также outdoor
