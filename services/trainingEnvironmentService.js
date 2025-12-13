@@ -173,21 +173,45 @@ async function createProfile(userId, name, slug, equipmentSlugs) {
       };
     }
 
-    // Находим базовый профиль по slug
-    const { data: baseProfile, error: baseErr } = await supabaseAdmin
+    // Проверяем, существует ли базовый профиль, если нет - создаем
+    let { data: baseProfile, error: baseErr } = await supabaseAdmin
       .from("training_environment_profiles")
       .select("id")
       .eq("slug", envSlug)
-      .single();
+      .limit(1)
+      .maybeSingle();
 
+    // Если базового профиля нет, создаем его
     if (baseErr || !baseProfile) {
-      return {
-        data: null,
-        error: {
-          message: `Base profile with slug '${envSlug}' not found`,
-          code: "NOT_FOUND",
-        },
+      const baseNameMap = {
+        home: "Дом",
+        gym: "Тренажерный зал",
+        workout: "Воркаут",
       };
+      const baseName = baseNameMap[envSlug] || envSlug;
+
+      const { data: newBaseProfile, error: createBaseErr } = await supabaseAdmin
+        .from("training_environment_profiles")
+        .insert([
+          {
+            id: crypto.randomUUID(),
+            slug: envSlug,
+            name: baseName,
+          },
+        ])
+        .select()
+        .single();
+
+      if (createBaseErr || !newBaseProfile) {
+        return {
+          data: null,
+          error: {
+            message: `Failed to create base profile with slug '${envSlug}': ${createBaseErr?.message || "Unknown error"}`,
+            code: "DATABASE_ERROR",
+          },
+        };
+      }
+      baseProfile = newBaseProfile;
     }
 
     // Создаем кастомный профиль (или используем существующий базовый)
