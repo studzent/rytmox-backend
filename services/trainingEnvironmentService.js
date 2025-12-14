@@ -71,10 +71,16 @@ async function listUserProfiles(userId) {
           );
         }
 
+        // Маппим уникальный slug обратно в базовый slug для API
+        // Если slug содержит подчеркивание (например, "gym_abc123"), извлекаем базовую часть
+        const baseSlug = profile.slug.includes('_') 
+          ? profile.slug.split('_')[0] 
+          : profile.slug;
+        
         return {
           id: profile.id,
           name: profile.name,
-          slug: profile.slug,
+          slug: baseSlug, // Возвращаем базовый slug для совместимости с API
           active: up.active,
           equipment_count: equipment?.length || 0,
           equipment_slugs: (equipment || []).map((e) => e.equipment_item_slug),
@@ -214,21 +220,20 @@ async function createProfile(userId, name, slug, equipmentSlugs) {
       baseProfile = newBaseProfile;
     }
 
-    // Создаем кастомный профиль (или используем существующий базовый)
-    // ВАЖНО: В текущей схеме training_environment_profiles содержит только базовые профили (home, gym, workout)
-    // Для кастомных профилей нужно либо:
-    // 1. Создавать новые записи в training_environment_profiles с кастомным name
-    // 2. Или хранить name в users_training_environment_profiles (но там нет поля name)
-    // 
-    // Решение: создаем новую запись в training_environment_profiles с кастомным name
-    // и используем тот же slug для группировки
+    // Создаем кастомный профиль с уникальным slug
+    // Проблема: slug должен быть уникальным, но пользователь может создать несколько мест одного типа
+    // Решение: создаем профиль с уникальным slug, добавляя UUID к базовому slug
+    // Но для отображения используем базовый slug для группировки
+    
+    // Генерируем уникальный slug: базовый_slug + UUID (первые 8 символов)
+    const uniqueSlug = `${envSlug}_${crypto.randomUUID().substring(0, 8)}`;
 
     const { data: customProfile, error: customErr } = await supabaseAdmin
       .from("training_environment_profiles")
       .insert([
         {
           id: crypto.randomUUID(),
-          slug: envSlug,
+          slug: uniqueSlug, // Используем уникальный slug
           name: name.trim(),
         },
       ])
@@ -299,7 +304,7 @@ async function createProfile(userId, name, slug, equipmentSlugs) {
       data: {
         id: customProfile.id,
         name: customProfile.name,
-        slug: customProfile.slug,
+        slug: envSlug, // Возвращаем базовый slug для API (для совместимости)
         active: false,
         equipment_count: equipmentSlugs?.length || 0,
         equipment_slugs: equipmentSlugs || [],
