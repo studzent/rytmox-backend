@@ -70,12 +70,50 @@ async function setUserActiveTrainingEnvironment(userId, envRaw) {
   const envSlug = dbEnvFromApi(envRaw);
   if (!envSlug) return { error: null };
 
-  const { data: envProfile, error: envErr } = await supabaseAdmin
+  // Используем .limit(1) вместо .single() для устойчивости к дубликатам slug
+  const { data: envProfiles, error: envErr } = await supabaseAdmin
     .from("training_environment_profiles")
     .select("id, slug")
     .eq("slug", envSlug)
-    .single();
+    .limit(1);
+  
   if (envErr) return { error: envErr };
+  
+  let envProfile = envProfiles && envProfiles.length > 0 ? envProfiles[0] : null;
+  
+  // Если профиля нет, создаем базовый профиль
+  if (!envProfile) {
+    const baseNameMap = {
+      home: "Дом",
+      gym: "Тренажерный зал",
+      workout: "Воркаут",
+    };
+    const baseName = baseNameMap[envSlug] || envSlug;
+    
+    const { data: newProfile, error: createErr } = await supabaseAdmin
+      .from("training_environment_profiles")
+      .insert([
+        {
+          id: crypto.randomUUID(),
+          slug: envSlug,
+          name: baseName,
+        },
+      ])
+      .select()
+      .single();
+    
+    if (createErr || !newProfile) {
+      return {
+        error: {
+          message: createErr?.message || "Failed to create base training environment profile",
+          code: createErr?.code || "DATABASE_ERROR",
+          details: createErr?.details || null,
+          hint: createErr?.hint || null,
+        },
+      };
+    }
+    envProfile = newProfile;
+  }
 
   const { error: deactErr } = await supabaseAdmin
     .from("users_training_environment_profiles")
@@ -625,8 +663,53 @@ async function upsertUserProfile(userId, payload) {
     if (payload.training_environment !== undefined) {
       console.log(`[upsertUserProfile] Setting training environment: ${payload.training_environment}`);
       
-      // Если есть equipment_items, создаем профиль с тренажерами
-      if (payload.equipment_items && Array.isArray(payload.equipment_items) && payload.equipment_items.length > 0) {
+      // Если пользователь выбрал окружение и есть (или будут) тренажёры, гарантируем,
+      // что у пользователя появится активный профиль окружения (users_training_environment_profiles).
+      // Это критично для клиента: GET /profile и GET /locations должны отражать выбор онбординга.
+      const equipmentCount =
+        Array.isArray(payload.equipment_items) ? payload.equipment_items.length : 0;
+      const shouldEnsureActiveEnv = Boolean(payload.training_environment) && equipmentCount > 0;
+      
+      if (shouldEnsureActiveEnv) {
+        const { error: ensureEnvErr } = await setUserActiveTrainingEnvironment(
+          userId,
+          payload.training_environment
+        );
+        if (ensureEnvErr) {
+          console.error("[upsertUserProfile] ❌ Failed to ensure active training environment:", {
+            message: ensureEnvErr.message,
+            code: ensureEnvErr.code,
+            details: ensureEnvErr.details,
+            hint: ensureEnvErr.hint,
+          });
+        } else {
+          console.log("[upsertUserProfile] ✅ Ensured active training environment link");
+        }
+      } else {
+        console.log("[upsertUserProfile] Skipping env activation (no equipment_items).", {
+          training_environment: payload.training_environment,
+          equipmentCount,
+        });
+      }
+      
+      // ВАЖНО: Проверяем наличие профилей ПОСЛЕ сохранения equipment_items,
+      // чтобы автовосстановление в listUserProfiles могло использовать свежие данные
+      // Проверяем, есть ли уже профили у пользователя
+      const { data: existingProfiles, error: checkProfilesErr } = await supabaseAdmin
+        .from("users_training_environment_profiles")
+        .select("training_environment_profile_id")
+        .eq("user_id", userId)
+        .limit(1);
+      
+      const hasExistingProfiles = !checkProfilesErr && existingProfiles && existingProfiles.length > 0;
+      console.log(`[upsertUserProfile] User has existing profiles: ${hasExistingProfiles}`, {
+        profilesCount: existingProfiles?.length || 0,
+        checkError: checkProfilesErr?.message,
+      });
+      
+      // Если есть equipment_items, создаем профиль с тренажерами (только если профилей еще нет)
+      // Используем equipment_items из payload (уже сохранены в users_equipment выше)
+      if (!hasExistingProfiles && payload.equipment_items && Array.isArray(payload.equipment_items) && payload.equipment_items.length > 0) {
         const trainingEnvironmentService = require("./trainingEnvironmentService");
         
         // Определяем название профиля на основе окружения
@@ -656,6 +739,9 @@ async function upsertUserProfile(userId, payload) {
             hint: createErr.hint,
             fullError: JSON.stringify(createErr, null, 2),
           });
+
+          // Если createProfile падает (например, из-за UNIQUE по slug),
+          // active env link уже пытались обеспечить выше. Здесь просто логируем.
         } else {
           console.log(`[upsertUserProfile] ✅ Successfully created training environment profile: ${profileData?.id}`);
           
@@ -671,8 +757,8 @@ async function upsertUserProfile(userId, payload) {
             console.log(`[upsertUserProfile] ✅ Successfully activated profile`);
           }
         }
-      } else {
-        // Если нет тренажеров, используем старую логику (базовый профиль)
+      } else if (!hasExistingProfiles) {
+        // Если нет тренажеров и нет профилей, используем старую логику (базовый профиль)
         const { error: envErr } = await setUserActiveTrainingEnvironment(
           userId,
           payload.training_environment
@@ -688,6 +774,8 @@ async function upsertUserProfile(userId, payload) {
         } else {
           console.log(`[upsertUserProfile] ✅ Successfully set training environment`);
         }
+      } else {
+        console.log(`[upsertUserProfile] User already has profiles, skipping creation`);
       }
     }
 

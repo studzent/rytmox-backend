@@ -103,17 +103,36 @@ exports.updateProfile = async (req, res) => {
       return res.status(statusCode).json({ error: error.message });
     }
 
-    // Формируем ответ в нужном формате
+    // ВАЖНО: upsertUserProfile возвращает запись из users (без нормализованных полей).
+    // Поэтому сразу подтягиваем "истину" через getUserProfile (users_measurements/users_equipment/users_training_environment_profiles).
+    const { data: hydrated, error: hydrateErr } = await userProfileService.getUserProfile(userId);
+    if (hydrateErr) {
+      console.error("Error hydrating user profile after update:", hydrateErr);
+      // Фолбэк: отдаём хотя бы то, что сохранили в users, чтобы не ломать клиент.
+      const fallback = {
+        userId: data?.id || data?.user_id || userId,
+        level: data?.level || null,
+        goal: data?.goal || null,
+        preferred_equipment: data?.preferred_equipment || [],
+        preferred_muscles: data?.preferred_muscles || [],
+        language: data?.language || null,
+        restrictions: data?.restrictions || {},
+        training_environment: null,
+        equipment_items: [],
+      };
+      return res.status(200).json(fallback);
+    }
+
     const response = {
-      userId: data.id || data.user_id,
-      level: data.level || null,
-      goal: data.goal || null,
-      preferred_equipment: data.preferred_equipment || [],
-      preferred_muscles: data.preferred_muscles || [],
-      language: data.language || null,
-      restrictions: data.restrictions || {},
-      training_environment: data.training_environment || null,
-      equipment_items: data.equipment_items || [],
+      userId: hydrated.id || hydrated.user_id,
+      level: hydrated.level || null,
+      goal: hydrated.goal || null,
+      preferred_equipment: hydrated.preferred_equipment || [],
+      preferred_muscles: hydrated.preferred_muscles || [],
+      language: hydrated.language || null,
+      restrictions: hydrated.restrictions || {},
+      training_environment: hydrated.training_environment || null,
+      equipment_items: hydrated.equipment_items || [],
     };
 
     return res.status(200).json(response);
