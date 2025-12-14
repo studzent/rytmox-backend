@@ -27,18 +27,40 @@ async function getLatestUserWeightKg(userId) {
 }
 
 async function getUserActiveEquipmentSlugs(userId) {
+  console.log(`[getUserActiveEquipmentSlugs] Loading equipment for userId: ${userId}`);
+  
   const { data, error } = await supabaseAdmin
     .from("users_equipment")
     .select("equipment_item_slug, availability, active")
     .eq("user_id", userId)
     .eq("active", true);
 
-  if (error) return { data: null, error };
+  if (error) {
+    console.error(`[getUserActiveEquipmentSlugs] ❌ Error loading equipment:`, {
+      error: error.message,
+      code: error.code,
+      details: error.details,
+    });
+    return { data: null, error };
+  }
+  
+  console.log(`[getUserActiveEquipmentSlugs] Raw data from DB:`, {
+    raw_count: data?.length || 0,
+    raw_sample: data?.slice(0, 5) || [],
+  });
+  
+  const filtered = (data || [])
+    .filter((r) => (r.availability ? r.availability !== "unavailable" : true))
+    .map((r) => r.equipment_item_slug)
+    .filter(Boolean);
+  
+  console.log(`[getUserActiveEquipmentSlugs] ✅ Filtered equipment slugs:`, {
+    filtered_count: filtered.length,
+    filtered_slugs: filtered.slice(0, 10),
+  });
+  
   return {
-    data: (data || [])
-      .filter((r) => (r.availability ? r.availability !== "unavailable" : true))
-      .map((r) => r.equipment_item_slug)
-      .filter(Boolean),
+    data: filtered,
     error: null,
   };
 }
@@ -152,14 +174,34 @@ async function setUserActiveTrainingEnvironment(userId, envRaw) {
 }
 
 async function replaceUserEquipment(userId, equipmentSlugs) {
+  console.log(`[replaceUserEquipment] Starting replacement for userId: ${userId}`, {
+    equipmentSlugs: equipmentSlugs,
+    equipmentSlugs_type: typeof equipmentSlugs,
+    equipmentSlugs_isArray: Array.isArray(equipmentSlugs),
+    equipmentSlugs_count: Array.isArray(equipmentSlugs) ? equipmentSlugs.length : 0,
+    equipmentSlugs_sample: Array.isArray(equipmentSlugs) ? equipmentSlugs.slice(0, 10) : [],
+  });
+  
   const { error: deactErr } = await supabaseAdmin
     .from("users_equipment")
     .update({ active: false })
     .eq("user_id", userId);
-  if (deactErr) return { error: deactErr };
+  if (deactErr) {
+    console.error(`[replaceUserEquipment] ❌ Error deactivating existing equipment:`, deactErr);
+    return { error: deactErr };
+  }
 
   const slugs = Array.isArray(equipmentSlugs) ? equipmentSlugs.filter(Boolean) : [];
-  if (slugs.length === 0) return { error: null };
+  console.log(`[replaceUserEquipment] Filtered slugs:`, {
+    original_count: Array.isArray(equipmentSlugs) ? equipmentSlugs.length : 0,
+    filtered_count: slugs.length,
+    filtered_slugs: slugs.slice(0, 10),
+  });
+  
+  if (slugs.length === 0) {
+    console.log(`[replaceUserEquipment] No equipment slugs to insert, returning success`);
+    return { error: null };
+  }
 
   await supabaseAdmin
     .from("users_equipment")
@@ -175,8 +217,25 @@ async function replaceUserEquipment(userId, equipmentSlugs) {
     added_at: new Date().toISOString(),
   }));
 
-  const { error: insErr } = await supabaseAdmin.from("users_equipment").insert(rows);
+  console.log(`[replaceUserEquipment] Inserting ${rows.length} equipment rows:`, {
+    rows_count: rows.length,
+    rows_sample: rows.slice(0, 5).map(r => ({ user_id: r.user_id, equipment_item_slug: r.equipment_item_slug })),
+  });
+
+  const { data: insertedData, error: insErr } = await supabaseAdmin
+    .from("users_equipment")
+    .insert(rows)
+    .select();
+    
   if (insErr) {
+    console.error(`[replaceUserEquipment] ❌ Error inserting equipment rows:`, {
+      error: insErr.message,
+      code: insErr.code,
+      details: insErr.details,
+      hint: insErr.hint,
+      rows_count: rows.length,
+      rows_sample: rows.slice(0, 5),
+    });
     return {
       error: {
         message: insErr.message || "Failed to insert users_equipment rows",
@@ -186,6 +245,8 @@ async function replaceUserEquipment(userId, equipmentSlugs) {
       },
     };
   }
+  
+  console.log(`[replaceUserEquipment] ✅ Successfully inserted ${insertedData?.length || 0} equipment rows`);
   return { error: null };
 }
 
@@ -271,11 +332,21 @@ async function getUserProfile(userId) {
       );
     }
 
+    const equipmentItems = equipmentRes.data ?? [];
+    console.log(`[getUserProfile] ✅ Returning profile with equipment_items:`, {
+      userId: data.id,
+      equipment_items: equipmentItems,
+      equipment_items_count: equipmentItems.length,
+      equipment_items_sample: equipmentItems.slice(0, 10),
+      training_environment: apiEnvFromDb(envRes.data),
+      weight_kg: weightRes.data ?? null,
+    });
+
     return {
       data: {
         ...data,
         weight_kg: weightRes.data ?? null,
-        equipment_items: equipmentRes.data ?? [],
+        equipment_items: equipmentItems,
         training_environment: apiEnvFromDb(envRes.data),
       },
       error: null,

@@ -59,16 +59,35 @@ async function listUserProfiles(userId) {
         if (!profile) return null;
 
         // Получаем тренажеры для этого профиля
+        console.log(`[listUserProfiles] Loading equipment for profile ${profile.id} (${profile.name})`);
         const { data: equipment, error: equipErr } = await supabaseAdmin
           .from("training_environment_profile_equipment")
           .select("equipment_item_slug")
           .eq("training_environment_profile_id", profile.id);
 
         if (equipErr) {
-          console.warn(
-            `[trainingEnvironmentService] Failed to load equipment for profile ${profile.id}:`,
-            equipErr.message
+          console.error(
+            `[listUserProfiles] ❌ Failed to load equipment for profile ${profile.id}:`,
+            {
+              error: equipErr.message,
+              code: equipErr.code,
+              details: equipErr.details,
+              hint: equipErr.hint,
+              profileId: profile.id,
+              profileName: profile.name,
+            }
           );
+        } else {
+          const equipmentSlugs = (equipment || []).map((e) => e.equipment_item_slug).filter(Boolean);
+          console.log(`[listUserProfiles] ✅ Loaded equipment for profile ${profile.id}:`, {
+            profileId: profile.id,
+            profileName: profile.name,
+            profileSlug: profile.slug,
+            rawEquipmentCount: equipment?.length || 0,
+            equipmentSlugsCount: equipmentSlugs.length,
+            equipmentSlugs: equipmentSlugs.slice(0, 10),
+            equipmentSlugs_full: equipmentSlugs.length <= 20 ? equipmentSlugs : equipmentSlugs.slice(0, 20),
+          });
         }
 
         // Маппим уникальный slug обратно в базовый slug для API
@@ -77,14 +96,27 @@ async function listUserProfiles(userId) {
           ? profile.slug.split('_')[0] 
           : profile.slug;
         
-        return {
+        const equipmentSlugs = (equipment || []).map((e) => e.equipment_item_slug).filter(Boolean);
+        const result = {
           id: profile.id,
           name: profile.name,
           slug: baseSlug, // Возвращаем базовый slug для совместимости с API
           active: up.active,
-          equipment_count: equipment?.length || 0,
-          equipment_slugs: (equipment || []).map((e) => e.equipment_item_slug),
+          equipment_count: equipmentSlugs.length,
+          equipment_slugs: equipmentSlugs,
         };
+        
+        console.log(`[listUserProfiles] 📦 Returning profile data:`, {
+          id: result.id,
+          name: result.name,
+          slug: result.slug,
+          active: result.active,
+          equipment_count: result.equipment_count,
+          equipment_slugs_count: result.equipment_slugs.length,
+          equipment_slugs_sample: result.equipment_slugs.slice(0, 10),
+        });
+        
+        return result;
       })
     );
 
@@ -148,6 +180,14 @@ async function getProfileEquipment(profileId) {
  */
 async function createProfile(userId, name, slug, equipmentSlugs) {
   try {
+    console.log(`[createProfile] Creating profile:`, {
+      userId,
+      name,
+      slug,
+      equipmentSlugsCount: Array.isArray(equipmentSlugs) ? equipmentSlugs.length : 0,
+      equipmentSlugs: Array.isArray(equipmentSlugs) ? equipmentSlugs.slice(0, 10) : equipmentSlugs,
+    });
+
     if (!userId) {
       return {
         data: null,
@@ -281,34 +321,61 @@ async function createProfile(userId, name, slug, equipmentSlugs) {
     }
 
     // Добавляем тренажеры к профилю
-    if (equipmentSlugs && equipmentSlugs.length > 0) {
+    let savedEquipmentCount = 0;
+    if (equipmentSlugs && Array.isArray(equipmentSlugs) && equipmentSlugs.length > 0) {
+      console.log(`[createProfile] Adding ${equipmentSlugs.length} equipment items to profile ${customProfile.id}`);
       const equipmentRows = equipmentSlugs.map((slug) => ({
         training_environment_profile_id: customProfile.id,
         equipment_item_slug: slug,
       }));
 
-      const { error: equipErr } = await supabaseAdmin
+      const { data: insertedEquipment, error: equipErr } = await supabaseAdmin
         .from("training_environment_profile_equipment")
-        .insert(equipmentRows);
+        .insert(equipmentRows)
+        .select();
 
       if (equipErr) {
-        console.warn(
-          `[trainingEnvironmentService] Failed to add equipment to profile ${customProfile.id}:`,
-          equipErr.message
+        console.error(
+          `[createProfile] ❌ Failed to add equipment to profile ${customProfile.id}:`,
+          {
+            error: equipErr.message,
+            code: equipErr.code,
+            details: equipErr.details,
+            hint: equipErr.hint,
+            equipmentCount: equipmentSlugs.length,
+            equipmentSlugs: equipmentSlugs.slice(0, 10),
+          }
         );
         // Не откатываем создание профиля, просто логируем
+        savedEquipmentCount = 0;
+      } else {
+        savedEquipmentCount = insertedEquipment?.length || 0;
+        console.log(`[createProfile] ✅ Successfully added ${savedEquipmentCount} equipment items to profile ${customProfile.id}`);
       }
+    } else {
+      console.log(`[createProfile] No equipment to add (equipmentSlugs: ${equipmentSlugs}, isArray: ${Array.isArray(equipmentSlugs)}, length: ${Array.isArray(equipmentSlugs) ? equipmentSlugs.length : 'N/A'})`);
     }
 
+    const result = {
+      id: customProfile.id,
+      name: customProfile.name,
+      slug: envSlug, // Возвращаем базовый slug для API (для совместимости)
+      active: false,
+      equipment_count: savedEquipmentCount || (equipmentSlugs?.length || 0),
+      equipment_slugs: equipmentSlugs || [],
+    };
+
+    console.log(`[createProfile] ✅ Profile created successfully:`, {
+      id: result.id,
+      name: result.name,
+      slug: result.slug,
+      equipment_count: result.equipment_count,
+      equipment_slugs_count: result.equipment_slugs.length,
+      equipment_slugs: result.equipment_slugs.slice(0, 10),
+    });
+
     return {
-      data: {
-        id: customProfile.id,
-        name: customProfile.name,
-        slug: envSlug, // Возвращаем базовый slug для API (для совместимости)
-        active: false,
-        equipment_count: equipmentSlugs?.length || 0,
-        equipment_slugs: equipmentSlugs || [],
-      },
+      data: result,
       error: null,
     };
   } catch (err) {
