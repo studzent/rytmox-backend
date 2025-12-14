@@ -668,7 +668,9 @@ async function upsertUserProfile(userId, payload) {
       // Это критично для клиента: GET /profile и GET /locations должны отражать выбор онбординга.
       const equipmentCount =
         Array.isArray(payload.equipment_items) ? payload.equipment_items.length : 0;
-      const shouldEnsureActiveEnv = Boolean(payload.training_environment) && equipmentCount > 0;
+      // Окружение должно быть активным даже если оборудование пустое:
+      // пользователь всё равно выбрал место тренировки (home/gym/workout).
+      const shouldEnsureActiveEnv = Boolean(payload.training_environment);
       
       if (shouldEnsureActiveEnv) {
         const { error: ensureEnvErr } = await setUserActiveTrainingEnvironment(
@@ -685,11 +687,6 @@ async function upsertUserProfile(userId, payload) {
         } else {
           console.log("[upsertUserProfile] ✅ Ensured active training environment link");
         }
-      } else {
-        console.log("[upsertUserProfile] Skipping env activation (no equipment_items).", {
-          training_environment: payload.training_environment,
-          equipmentCount,
-        });
       }
       
       // ВАЖНО: Проверяем наличие профилей ПОСЛЕ сохранения equipment_items,
