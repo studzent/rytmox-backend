@@ -765,6 +765,44 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
     }
     const workoutNotes = Object.keys(notesData).length > 0 ? JSON.stringify(notesData) : null;
 
+    // Проверяем существование пользователя перед созданием тренировки
+    console.log(`[aiService] Creating workout for userId: ${userId}`);
+    if (userId) {
+      console.log(`[aiService] Validating user existence for userId: ${userId}`);
+      const { data: user, error: userError } = await supabaseAdmin
+        .from("users")
+        .select("id")
+        .eq("id", userId)
+        .single();
+
+      if (userError || !user) {
+        console.warn(`[aiService] User ${userId} not found in users table, returning plan without saving`);
+        // Возвращаем план без сохранения в БД
+        return {
+          data: {
+            plan: mappedPlan,
+            meta: meta,
+            workoutId: null,
+          },
+          error: null,
+        };
+      } else {
+        console.log(`[aiService] User ${userId} validated, proceeding with workout creation`);
+      }
+    } else {
+      console.warn(`[aiService] No userId provided, returning plan without saving`);
+      // Возвращаем план без сохранения в БД, если userId не передан
+      return {
+        data: {
+          plan: mappedPlan,
+          meta: meta,
+          workoutId: null,
+        },
+        error: null,
+      };
+    }
+
+    // Теперь безопасно создаем тренировку
     const { data: workout, error: workoutError } = await supabaseAdmin
       .from("workouts")
       .insert([
