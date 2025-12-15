@@ -150,59 +150,120 @@ async function createProfile(userId, name, slug, equipmentSlugs = []) {
     // Нормализуем slug (outdoor -> workout)
     const normalizedSlug = slug === "outdoor" ? "workout" : slug;
 
-    // Создаем профиль
-    const profileId = crypto.randomUUID();
-    const { data: profile, error: profileErr } = await supabaseAdmin
+    // Проверяем, существует ли уже профиль с таким slug
+    const { data: existingProfiles, error: checkErr } = await supabaseAdmin
       .from("training_environment_profiles")
-      .insert([
-        {
-          id: profileId,
-          name: name.trim(),
-          slug: normalizedSlug,
-        },
-      ])
-      .select()
-      .single();
+      .select("id, name, slug")
+      .eq("slug", normalizedSlug)
+      .limit(1);
 
-    if (profileErr) {
-      console.error("[createProfile] Error creating profile:", profileErr);
-      return { data: null, error: profileErr };
+    if (checkErr) {
+      console.error("[createProfile] Error checking existing profile:", checkErr);
+      return { data: null, error: checkErr };
     }
 
-    // Сохраняем оборудование
-    if (equipmentSlugs && Array.isArray(equipmentSlugs) && equipmentSlugs.length > 0) {
-      const equipmentRows = equipmentSlugs
-        .filter(Boolean)
-        .map((slug) => ({
-          training_environment_profile_id: profileId,
-          equipment_item_slug: slug,
-        }));
+    let profile;
+    let profileId;
 
-      const { error: equipErr } = await supabaseAdmin
-        .from("training_environment_profile_equipment")
-        .insert(equipmentRows);
+    // Если профиль с таким slug уже существует, используем его
+    if (existingProfiles && existingProfiles.length > 0) {
+      profile = existingProfiles[0];
+      profileId = profile.id;
+      console.log(`[createProfile] Using existing profile with slug ${normalizedSlug}: ${profileId}`);
+    } else {
+      // Создаем новый профиль только если его нет
+      profileId = crypto.randomUUID();
+      const { data: newProfile, error: profileErr } = await supabaseAdmin
+        .from("training_environment_profiles")
+        .insert([
+          {
+            id: profileId,
+            name: name.trim(),
+            slug: normalizedSlug,
+          },
+        ])
+        .select()
+        .single();
 
-      if (equipErr) {
-        console.error("[createProfile] Error saving equipment:", equipErr);
-        // Не прерываем выполнение, но логируем ошибку
+      if (profileErr) {
+        console.error("[createProfile] Error creating profile:", profileErr);
+        return { data: null, error: profileErr };
       }
+      profile = newProfile;
+      console.log(`[createProfile] Created new profile with slug ${normalizedSlug}: ${profileId}`);
     }
 
-    // Создаем связь пользователя с профилем (неактивную по умолчанию)
-    const { error: linkErr } = await supabaseAdmin
+    // Проверяем, есть ли уже связь пользователя с этим профилем
+    const { data: existingLink, error: linkCheckErr } = await supabaseAdmin
       .from("users_training_environment_profiles")
-      .insert([
-        {
-          user_id: userId,
-          training_environment_profile_id: profileId,
-          active: false,
-          added_at: new Date().toISOString(),
-        },
-      ]);
+      .select("id")
+      .eq("user_id", userId)
+      .eq("training_environment_profile_id", profileId)
+      .limit(1);
 
-    if (linkErr) {
-      console.error("[createProfile] Error creating user profile link:", linkErr);
-      return { data: null, error: linkErr };
+    if (linkCheckErr) {
+      console.error("[createProfile] Error checking existing user profile link:", linkCheckErr);
+      return { data: null, error: linkCheckErr };
+    }
+
+    // Создаем связь пользователя с профилем только если её еще нет
+    if (!existingLink || existingLink.length === 0) {
+      const { error: linkErr } = await supabaseAdmin
+        .from("users_training_environment_profiles")
+        .insert([
+          {
+            user_id: userId,
+            training_environment_profile_id: profileId,
+            active: false,
+            added_at: new Date().toISOString(),
+          },
+        ]);
+
+      if (linkErr) {
+        console.error("[createProfile] Error creating user profile link:", linkErr);
+        return { data: null, error: linkErr };
+      }
+      console.log(`[createProfile] Created user profile link for userId: ${userId}, profileId: ${profileId}`);
+    } else {
+      console.log(`[createProfile] User profile link already exists for userId: ${userId}, profileId: ${profileId}`);
+    }
+
+    // Сохраняем оборудование только если профиль был только что создан
+    // Если профиль уже существовал, не перезаписываем его оборудование
+    if (equipmentSlugs && Array.isArray(equipmentSlugs) && equipmentSlugs.length > 0) {
+      // Проверяем, есть ли уже оборудование у этого профиля
+      const { data: existingEquipment, error: equipCheckErr } = await supabaseAdmin
+        .from("training_environment_profile_equipment")
+        .select("equipment_item_slug")
+        .eq("training_environment_profile_id", profileId)
+        .limit(1);
+
+      if (equipCheckErr) {
+        console.warn("[createProfile] Warning: Could not check existing equipment:", equipCheckErr);
+      }
+
+      // Добавляем оборудование только если его еще нет
+      if (!existingEquipment || existingEquipment.length === 0) {
+        const equipmentRows = equipmentSlugs
+          .filter(Boolean)
+          .map((slug) => ({
+            training_environment_profile_id: profileId,
+            equipment_item_slug: slug,
+          }));
+
+        const { error: equipErr } = await supabaseAdmin
+          .from("training_environment_profile_equipment")
+          .insert(equipmentRows);
+
+        if (equipErr) {
+          console.error("[createProfile] Error saving equipment:", equipErr);
+          // Не прерываем выполнение, но логируем ошибку
+        } else {
+          console.log(`[createProfile] Saved ${equipmentRows.length} equipment items for profile ${profileId}`);
+        }
+      } else {
+        console.log(`[createProfile] Profile ${profileId} already has equipment, skipping equipment update`);
+      }
     }
 
     const equipmentSlugsArray = Array.isArray(equipmentSlugs) ? equipmentSlugs : [];
@@ -281,6 +342,17 @@ async function updateProfile(userId, profileId, updates) {
 
     // Обновляем оборудование, если указано
     if (updates.equipment_slugs !== undefined) {
+      // ВАЖНО: Проверяем активность профиля ДО обновления оборудования
+      // чтобы знать, нужно ли синхронизировать в users_equipment
+      const { data: userProfileLinkBefore, error: linkErrBefore } = await supabaseAdmin
+        .from("users_training_environment_profiles")
+        .select("active")
+        .eq("user_id", userId)
+        .eq("training_environment_profile_id", profileId)
+        .single();
+      
+      const isActive = userProfileLinkBefore?.active || false;
+      
       // Удаляем старое оборудование
       const { error: deleteErr } = await supabaseAdmin
         .from("training_environment_profile_equipment")
@@ -308,6 +380,25 @@ async function updateProfile(userId, profileId, updates) {
         if (insertErr) {
           console.error("[updateProfile] Error inserting new equipment:", insertErr);
           return { data: null, error: insertErr };
+        }
+      }
+      
+      // ВАЖНО: Если профиль активен, синхронизируем оборудование в users_equipment
+      if (isActive) {
+        const equipmentSlugsToSync = Array.isArray(updates.equipment_slugs) 
+          ? updates.equipment_slugs.filter(Boolean) 
+          : [];
+        
+        console.log(`[updateProfile] Profile is active, syncing equipment to users_equipment:`, equipmentSlugsToSync.length, 'items');
+        
+        const userProfileService = require("./userProfileService");
+        const { error: syncErr } = await userProfileService.replaceUserEquipment(userId, equipmentSlugsToSync);
+        
+        if (syncErr) {
+          console.error("[updateProfile] Failed to sync equipment to users_equipment:", syncErr);
+          // Не прерываем обновление профиля, но логируем ошибку
+        } else {
+          console.log(`[updateProfile] ✅ Successfully synced ${equipmentSlugsToSync.length} equipment items to users_equipment`);
         }
       }
     }
