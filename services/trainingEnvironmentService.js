@@ -1,20 +1,8 @@
 const { supabaseAdmin } = require("../utils/supabaseClient");
 const crypto = require("crypto");
 
-function dbEnvFromApi(env) {
-  if (!env) return null;
-  if (env === "outdoor") return "workout";
-  return env;
-}
-
-function apiEnvFromDb(env) {
-  if (!env) return null;
-  if (env === "workout") return "outdoor";
-  return env;
-}
-
 /**
- * Получить список всех профилей пользователя с количеством тренажеров
+ * Получить список всех профилей пользователя
  * @param {string} userId - ID пользователя
  * @returns {Promise<{data: array|null, error: object|null}>}
  */
@@ -30,164 +18,105 @@ async function listUserProfiles(userId) {
       };
     }
 
-    // Получаем все связи пользователя с профилями
-    const { data: userProfiles, error: userProfilesErr } = await supabaseAdmin
+    // Загружаем связи пользователя с профилями
+    const { data: userProfiles, error: linkErr } = await supabaseAdmin
       .from("users_training_environment_profiles")
-      .select(
-        `
-        training_environment_profile_id,
-        active,
-        added_at,
-        training_environment_profiles (
-          id,
-          slug,
-          name
-        )
-      `
-      )
+      .select("training_environment_profile_id, active, added_at")
       .eq("user_id", userId)
       .order("added_at", { ascending: false });
 
-    if (userProfilesErr) {
-      return { data: null, error: userProfilesErr };
+    if (linkErr) {
+      console.error("[listUserProfiles] Error loading user profiles:", linkErr);
+      return { data: null, error: linkErr };
     }
 
-    // Для каждого профиля получаем количество тренажеров
-    const profilesWithEquipment = await Promise.all(
-      (userProfiles || []).map(async (up) => {
-        const profile = up.training_environment_profiles;
-        if (!profile) return null;
+    if (!userProfiles || userProfiles.length === 0) {
+      return { data: [], error: null };
+    }
 
-        // Получаем тренажеры для этого профиля
-        console.log(`[listUserProfiles] Loading equipment for profile ${profile.id} (${profile.name})`);
-        const { data: equipment, error: equipErr } = await supabaseAdmin
-          .from("training_environment_profile_equipment")
-          .select("equipment_item_slug")
-          .eq("training_environment_profile_id", profile.id);
+    // Загружаем сами профили
+    const profileIds = userProfiles.map((up) => up.training_environment_profile_id);
+    const { data: profiles, error: profilesErr } = await supabaseAdmin
+      .from("training_environment_profiles")
+      .select("id, name, slug")
+      .in("id", profileIds);
 
-        if (equipErr) {
-          console.error(
-            `[listUserProfiles] ❌ Failed to load equipment for profile ${profile.id}:`,
-            {
-              error: equipErr.message,
-              code: equipErr.code,
-              details: equipErr.details,
-              hint: equipErr.hint,
-              profileId: profile.id,
-              profileName: profile.name,
-            }
-          );
-        } else {
-          const equipmentSlugs = (equipment || []).map((e) => e.equipment_item_slug).filter(Boolean);
-          console.log(`[listUserProfiles] ✅ Loaded equipment for profile ${profile.id}:`, {
-            profileId: profile.id,
-            profileName: profile.name,
-            profileSlug: profile.slug,
-            rawEquipmentCount: equipment?.length || 0,
-            equipmentSlugsCount: equipmentSlugs.length,
-            equipmentSlugs: equipmentSlugs.slice(0, 10),
-            equipmentSlugs_full: equipmentSlugs.length <= 20 ? equipmentSlugs : equipmentSlugs.slice(0, 20),
-          });
-        }
+    if (profilesErr) {
+      console.error("[listUserProfiles] Error loading profiles:", profilesErr);
+      return { data: null, error: profilesErr };
+    }
 
-        // Маппим уникальный slug обратно в базовый slug для API
-        // Если slug содержит подчеркивание (например, "gym_abc123"), извлекаем базовую часть
-        const baseSlug = profile.slug.includes('_') 
-          ? profile.slug.split('_')[0] 
-          : profile.slug;
-        
-        const equipmentSlugs = (equipment || []).map((e) => e.equipment_item_slug).filter(Boolean);
-        const result = {
-          id: profile.id,
-          name: profile.name,
-          slug: baseSlug, // Возвращаем базовый slug для совместимости с API
-          active: up.active,
-          equipment_count: equipmentSlugs.length,
-          equipment_slugs: equipmentSlugs,
-        };
-        
-        console.log(`[listUserProfiles] 📦 Returning profile data:`, {
-          id: result.id,
-          name: result.name,
-          slug: result.slug,
-          active: result.active,
-          equipment_count: result.equipment_count,
-          equipment_slugs_count: result.equipment_slugs.length,
-          equipment_slugs_sample: result.equipment_slugs.slice(0, 10),
-        });
-        
-        return result;
-      })
+    // Создаем мапу для быстрого доступа
+    const profileMap = new Map(profiles.map((p) => [p.id, p]));
+    const userProfileMap = new Map(
+      userProfiles.map((up) => [up.training_environment_profile_id, up])
     );
 
-    return {
-      data: profilesWithEquipment.filter(Boolean),
-      error: null,
-    };
-  } catch (err) {
-    return {
-      data: null,
-      error: { message: err.message, code: "INTERNAL_ERROR" },
-    };
-  }
-}
-
-/**
- * Получить оборудование для профиля
- * @param {string} profileId - ID профиля
- * @returns {Promise<{data: array|null, error: object|null}>}
- */
-async function getProfileEquipment(profileId) {
-  try {
-    if (!profileId) {
-      return {
-        data: null,
-        error: {
-          message: "profileId is required",
-          code: "VALIDATION_ERROR",
-        },
-      };
-    }
-
-    const { data, error } = await supabaseAdmin
+    // Загружаем оборудование для всех профилей
+    const { data: equipment, error: equipErr } = await supabaseAdmin
       .from("training_environment_profile_equipment")
-      .select("equipment_item_slug")
-      .eq("training_environment_profile_id", profileId);
+      .select("training_environment_profile_id, equipment_item_slug")
+      .in("training_environment_profile_id", profileIds);
 
-    if (error) {
-      return { data: null, error };
+    if (equipErr) {
+      console.warn("[listUserProfiles] Error loading equipment:", equipErr);
+      // Не прерываем выполнение, просто логируем
     }
 
-    return {
-      data: (data || []).map((e) => e.equipment_item_slug),
-      error: null,
-    };
+    // Группируем оборудование по профилям
+    const equipmentMap = new Map();
+    if (equipment) {
+      equipment.forEach((e) => {
+        if (!equipmentMap.has(e.training_environment_profile_id)) {
+          equipmentMap.set(e.training_environment_profile_id, []);
+        }
+        equipmentMap.get(e.training_environment_profile_id).push(e.equipment_item_slug);
+      });
+    }
+
+    // Формируем результат
+    const results = [];
+    for (const up of userProfiles) {
+      const profile = profileMap.get(up.training_environment_profile_id);
+      if (!profile) continue;
+
+      const equipmentSlugs = equipmentMap.get(profile.id) || [];
+      const baseSlug = profile.slug;
+
+      results.push({
+        id: profile.id,
+        name: profile.name,
+        slug: baseSlug,
+        active: up.active,
+        equipment_count: equipmentSlugs.length,
+        equipment_slugs: equipmentSlugs,
+      });
+    }
+
+    console.log(`[listUserProfiles] ✅ Loaded ${results.length} profiles for userId: ${userId}`);
+    return { data: results, error: null };
   } catch (err) {
+    console.error("[listUserProfiles] Unexpected error:", err);
     return {
       data: null,
-      error: { message: err.message, code: "INTERNAL_ERROR" },
+      error: {
+        message: err.message,
+        code: "INTERNAL_ERROR",
+      },
     };
   }
 }
 
 /**
- * Создать новый профиль для пользователя
+ * Создать новый профиль места тренировки
  * @param {string} userId - ID пользователя
  * @param {string} name - Название профиля
- * @param {string} slug - Slug окружения (home, gym, workout)
- * @param {string[]} equipmentSlugs - Массив slug-ов тренажеров
+ * @param {string} slug - Slug окружения (home, gym, workout, outdoor)
+ * @param {string[]} equipmentSlugs - Массив slug-ов оборудования
  * @returns {Promise<{data: object|null, error: object|null}>}
  */
-async function createProfile(userId, name, slug, equipmentSlugs) {
+async function createProfile(userId, name, slug, equipmentSlugs = []) {
   try {
-    console.log(`[createProfile] Creating profile:`, {
-      userId,
-      name,
-      slug,
-      equipmentSlugsCount: Array.isArray(equipmentSlugs) ? equipmentSlugs.length : 0,
-      equipmentSlugs: Array.isArray(equipmentSlugs) ? equipmentSlugs.slice(0, 10) : equipmentSlugs,
-    });
-
     if (!userId) {
       return {
         data: null,
@@ -208,189 +137,103 @@ async function createProfile(userId, name, slug, equipmentSlugs) {
       };
     }
 
-    const envSlug = dbEnvFromApi(slug);
-    if (!envSlug || !["home", "gym", "workout"].includes(envSlug)) {
+    if (!slug || !["home", "gym", "workout", "outdoor"].includes(slug)) {
       return {
         data: null,
         error: {
-          message: "slug must be one of: home, gym, workout",
+          message: "slug must be one of: home, gym, workout, outdoor",
           code: "VALIDATION_ERROR",
         },
       };
     }
 
-    // Проверяем, существует ли базовый профиль, если нет - создаем
-    let { data: baseProfile, error: baseErr } = await supabaseAdmin
-      .from("training_environment_profiles")
-      .select("id")
-      .eq("slug", envSlug)
-      .limit(1)
-      .maybeSingle();
+    // Нормализуем slug (outdoor -> workout)
+    const normalizedSlug = slug === "outdoor" ? "workout" : slug;
 
-    // Если базового профиля нет, создаем его
-    if (baseErr || !baseProfile) {
-      const baseNameMap = {
-        home: "Дом",
-        gym: "Тренажерный зал",
-        workout: "Воркаут",
-      };
-      const baseName = baseNameMap[envSlug] || envSlug;
-
-      const { data: newBaseProfile, error: createBaseErr } = await supabaseAdmin
-        .from("training_environment_profiles")
-        .insert([
-          {
-            id: crypto.randomUUID(),
-            slug: envSlug,
-            name: baseName,
-          },
-        ])
-        .select()
-        .single();
-
-      if (createBaseErr || !newBaseProfile) {
-        return {
-          data: null,
-          error: {
-            message: `Failed to create base profile with slug '${envSlug}': ${createBaseErr?.message || "Unknown error"}`,
-            code: "DATABASE_ERROR",
-          },
-        };
-      }
-      baseProfile = newBaseProfile;
-    }
-
-    // Создаем кастомный профиль с уникальным slug
-    // Проблема: slug должен быть уникальным, но пользователь может создать несколько мест одного типа
-    // Решение: создаем профиль с уникальным slug, добавляя UUID к базовому slug
-    // Но для отображения используем базовый slug для группировки
-    
-    // Генерируем уникальный slug: базовый_slug + UUID (первые 8 символов)
-    const uniqueSlug = `${envSlug}_${crypto.randomUUID().substring(0, 8)}`;
-
-    const { data: customProfile, error: customErr } = await supabaseAdmin
+    // Создаем профиль
+    const profileId = crypto.randomUUID();
+    const { data: profile, error: profileErr } = await supabaseAdmin
       .from("training_environment_profiles")
       .insert([
         {
-          id: crypto.randomUUID(),
-          slug: uniqueSlug, // Используем уникальный slug
+          id: profileId,
           name: name.trim(),
+          slug: normalizedSlug,
         },
       ])
       .select()
       .single();
 
-    if (customErr) {
-      return {
-        data: null,
-        error: {
-          message: customErr.message || "Failed to create profile",
-          code: customErr.code || "DATABASE_ERROR",
-          details: customErr.details || null,
-          hint: customErr.hint || null,
-        },
-      };
+    if (profileErr) {
+      console.error("[createProfile] Error creating profile:", profileErr);
+      return { data: null, error: profileErr };
     }
 
-    // Связываем пользователя с профилем
+    // Сохраняем оборудование
+    if (equipmentSlugs && Array.isArray(equipmentSlugs) && equipmentSlugs.length > 0) {
+      const equipmentRows = equipmentSlugs
+        .filter(Boolean)
+        .map((slug) => ({
+          training_environment_profile_id: profileId,
+          equipment_item_slug: slug,
+        }));
+
+      const { error: equipErr } = await supabaseAdmin
+        .from("training_environment_profile_equipment")
+        .insert(equipmentRows);
+
+      if (equipErr) {
+        console.error("[createProfile] Error saving equipment:", equipErr);
+        // Не прерываем выполнение, но логируем ошибку
+      }
+    }
+
+    // Создаем связь пользователя с профилем (неактивную по умолчанию)
     const { error: linkErr } = await supabaseAdmin
       .from("users_training_environment_profiles")
       .insert([
         {
           user_id: userId,
-          training_environment_profile_id: customProfile.id,
-          active: false, // Новый профиль не активен по умолчанию
+          training_environment_profile_id: profileId,
+          active: false,
           added_at: new Date().toISOString(),
         },
       ]);
 
     if (linkErr) {
-      // Откатываем создание профиля
-      await supabaseAdmin
-        .from("training_environment_profiles")
-        .delete()
-        .eq("id", customProfile.id);
-
-      return {
-        data: null,
-        error: {
-          message: linkErr.message || "Failed to link profile to user",
-          code: linkErr.code || "DATABASE_ERROR",
-        },
-      };
+      console.error("[createProfile] Error creating user profile link:", linkErr);
+      return { data: null, error: linkErr };
     }
 
-    // Добавляем тренажеры к профилю
-    let savedEquipmentCount = 0;
-    if (equipmentSlugs && Array.isArray(equipmentSlugs) && equipmentSlugs.length > 0) {
-      console.log(`[createProfile] Adding ${equipmentSlugs.length} equipment items to profile ${customProfile.id}`);
-      const equipmentRows = equipmentSlugs.map((slug) => ({
-        training_environment_profile_id: customProfile.id,
-        equipment_item_slug: slug,
-      }));
-
-      const { data: insertedEquipment, error: equipErr } = await supabaseAdmin
-        .from("training_environment_profile_equipment")
-        .insert(equipmentRows)
-        .select();
-
-      if (equipErr) {
-        console.error(
-          `[createProfile] ❌ Failed to add equipment to profile ${customProfile.id}:`,
-          {
-            error: equipErr.message,
-            code: equipErr.code,
-            details: equipErr.details,
-            hint: equipErr.hint,
-            equipmentCount: equipmentSlugs.length,
-            equipmentSlugs: equipmentSlugs.slice(0, 10),
-          }
-        );
-        // Не откатываем создание профиля, просто логируем
-        savedEquipmentCount = 0;
-      } else {
-        savedEquipmentCount = insertedEquipment?.length || 0;
-        console.log(`[createProfile] ✅ Successfully added ${savedEquipmentCount} equipment items to profile ${customProfile.id}`);
-      }
-    } else {
-      console.log(`[createProfile] No equipment to add (equipmentSlugs: ${equipmentSlugs}, isArray: ${Array.isArray(equipmentSlugs)}, length: ${Array.isArray(equipmentSlugs) ? equipmentSlugs.length : 'N/A'})`);
-    }
-
+    const equipmentSlugsArray = Array.isArray(equipmentSlugs) ? equipmentSlugs : [];
     const result = {
-      id: customProfile.id,
-      name: customProfile.name,
-      slug: envSlug, // Возвращаем базовый slug для API (для совместимости)
+      id: profile.id,
+      name: profile.name,
+      slug: profile.slug,
       active: false,
-      equipment_count: savedEquipmentCount || (equipmentSlugs?.length || 0),
-      equipment_slugs: equipmentSlugs || [],
+      equipment_count: equipmentSlugsArray.length,
+      equipment_slugs: equipmentSlugsArray,
     };
 
-    console.log(`[createProfile] ✅ Profile created successfully:`, {
-      id: result.id,
-      name: result.name,
-      slug: result.slug,
-      equipment_count: result.equipment_count,
-      equipment_slugs_count: result.equipment_slugs.length,
-      equipment_slugs: result.equipment_slugs.slice(0, 10),
-    });
-
-    return {
-      data: result,
-      error: null,
-    };
+    console.log(`[createProfile] ✅ Created profile: ${result.id} for userId: ${userId}`);
+    return { data: result, error: null };
   } catch (err) {
+    console.error("[createProfile] Unexpected error:", err);
     return {
       data: null,
-      error: { message: err.message, code: "INTERNAL_ERROR" },
+      error: {
+        message: err.message,
+        code: "INTERNAL_ERROR",
+      },
     };
   }
 }
 
 /**
- * Обновить профиль (название и/или тренажеры)
+ * Обновить профиль (название и/или оборудование)
  * @param {string} userId - ID пользователя
  * @param {string} profileId - ID профиля
- * @param {object} updates - Обновления {name?: string, equipment_slugs?: string[]}
+ * @param {object} updates - Объект с полями для обновления {name?, equipment_slugs?}
  * @returns {Promise<{data: object|null, error: object|null}>}
  */
 async function updateProfile(userId, profileId, updates) {
@@ -417,112 +260,114 @@ async function updateProfile(userId, profileId, updates) {
       return {
         data: null,
         error: {
-          message: "Profile not found or access denied",
+          message: "Profile not found or does not belong to user",
           code: "NOT_FOUND",
         },
       };
     }
 
-    // Обновляем название, если указано
-    if (updates.name !== undefined && updates.name.trim()) {
+    // Обновляем название профиля, если указано
+    if (updates.name !== undefined) {
       const { error: nameErr } = await supabaseAdmin
         .from("training_environment_profiles")
         .update({ name: updates.name.trim() })
         .eq("id", profileId);
 
       if (nameErr) {
-        return {
-          data: null,
-          error: {
-            message: nameErr.message || "Failed to update profile name",
-            code: nameErr.code || "DATABASE_ERROR",
-          },
-        };
+        console.error("[updateProfile] Error updating name:", nameErr);
+        return { data: null, error: nameErr };
       }
     }
 
-    // Обновляем тренажеры, если указано
+    // Обновляем оборудование, если указано
     if (updates.equipment_slugs !== undefined) {
-      // Удаляем старые тренажеры
+      // Удаляем старое оборудование
       const { error: deleteErr } = await supabaseAdmin
         .from("training_environment_profile_equipment")
         .delete()
         .eq("training_environment_profile_id", profileId);
 
       if (deleteErr) {
-        console.warn(
-          `[trainingEnvironmentService] Failed to delete old equipment:`,
-          deleteErr.message
-        );
+        console.error("[updateProfile] Error deleting old equipment:", deleteErr);
+        return { data: null, error: deleteErr };
       }
 
-      // Добавляем новые тренажеры
+      // Добавляем новое оборудование
       if (Array.isArray(updates.equipment_slugs) && updates.equipment_slugs.length > 0) {
-        const equipmentRows = updates.equipment_slugs.map((slug) => ({
-          training_environment_profile_id: profileId,
-          equipment_item_slug: slug,
-        }));
+        const equipmentRows = updates.equipment_slugs
+          .filter(Boolean)
+          .map((slug) => ({
+            training_environment_profile_id: profileId,
+            equipment_item_slug: slug,
+          }));
 
         const { error: insertErr } = await supabaseAdmin
           .from("training_environment_profile_equipment")
           .insert(equipmentRows);
 
         if (insertErr) {
-          return {
-            data: null,
-            error: {
-              message: insertErr.message || "Failed to update equipment",
-              code: insertErr.code || "DATABASE_ERROR",
-            },
-          };
+          console.error("[updateProfile] Error inserting new equipment:", insertErr);
+          return { data: null, error: insertErr };
         }
       }
     }
 
-    // Получаем обновленный профиль
-    const { data: updatedProfile, error: fetchErr } = await supabaseAdmin
+    // Загружаем обновленный профиль
+    const { data: profile, error: profileErr } = await supabaseAdmin
       .from("training_environment_profiles")
       .select("id, name, slug")
       .eq("id", profileId)
       .single();
 
-    if (fetchErr) {
-      return { data: null, error: fetchErr };
+    if (profileErr) {
+      return { data: null, error: profileErr };
     }
 
-    // Получаем тренажеры
-    const equipmentRes = await getProfileEquipment(profileId);
-    const equipmentSlugs = equipmentRes.data || [];
-
-    // Получаем active статус
-    const { data: userLink } = await supabaseAdmin
+    // Загружаем активность профиля
+    const { data: userProfileLink, error: linkErr } = await supabaseAdmin
       .from("users_training_environment_profiles")
       .select("active")
       .eq("user_id", userId)
       .eq("training_environment_profile_id", profileId)
       .single();
 
-    return {
-      data: {
-        id: updatedProfile.id,
-        name: updatedProfile.name,
-        slug: updatedProfile.slug,
-        active: userLink?.active || false,
-        equipment_count: equipmentSlugs.length,
-        equipment_slugs: equipmentSlugs,
-      },
-      error: null,
+    if (linkErr) {
+      return { data: null, error: linkErr };
+    }
+
+    // Загружаем оборудование
+    const { data: equipment, error: equipErr } = await supabaseAdmin
+      .from("training_environment_profile_equipment")
+      .select("equipment_item_slug")
+      .eq("training_environment_profile_id", profileId);
+
+    const equipmentSlugs = (equipment || []).map((e) => e.equipment_item_slug).filter(Boolean);
+
+    const result = {
+      id: profile.id,
+      name: profile.name,
+      slug: profile.slug,
+      active: userProfileLink?.active || false,
+      equipment_count: equipmentSlugs.length,
+      equipment_slugs: equipmentSlugs,
     };
+
+    console.log(`[updateProfile] ✅ Updated profile: ${profileId} for userId: ${userId}`);
+    return { data: result, error: null };
   } catch (err) {
+    console.error("[updateProfile] Unexpected error:", err);
     return {
       data: null,
-      error: { message: err.message, code: "INTERNAL_ERROR" },
+      error: {
+        message: err.message,
+        code: "INTERNAL_ERROR",
+      },
     };
   }
 }
 
 /**
- * Активировать профиль (деактивирует остальные)
+ * Активировать профиль (деактивирует остальные и синхронизирует оборудование)
  * @param {string} userId - ID пользователя
  * @param {string} profileId - ID профиля для активации
  * @returns {Promise<{data: object|null, error: object|null}>}
@@ -539,7 +384,7 @@ async function activateProfile(userId, profileId) {
       };
     }
 
-    // Проверяем, что профиль принадлежит пользователю
+    // Проверяем, что профиль существует и принадлежит пользователю
     const { data: userProfile, error: checkErr } = await supabaseAdmin
       .from("users_training_environment_profiles")
       .select("training_environment_profile_id")
@@ -551,7 +396,7 @@ async function activateProfile(userId, profileId) {
       return {
         data: null,
         error: {
-          message: "Profile not found or access denied",
+          message: "Profile not found or does not belong to user",
           code: "NOT_FOUND",
         },
       };
@@ -564,13 +409,8 @@ async function activateProfile(userId, profileId) {
       .eq("user_id", userId);
 
     if (deactErr) {
-      return {
-        data: null,
-        error: {
-          message: deactErr.message || "Failed to deactivate other profiles",
-          code: deactErr.code || "DATABASE_ERROR",
-        },
-      };
+      console.error("[activateProfile] Error deactivating profiles:", deactErr);
+      return { data: null, error: deactErr };
     }
 
     // Активируем выбранный профиль
@@ -581,27 +421,94 @@ async function activateProfile(userId, profileId) {
       .eq("training_environment_profile_id", profileId);
 
     if (actErr) {
-      return {
-        data: null,
-        error: {
-          message: actErr.message || "Failed to activate profile",
-          code: actErr.code || "DATABASE_ERROR",
-        },
-      };
+      console.error("[activateProfile] Error activating profile:", actErr);
+      return { data: null, error: actErr };
     }
 
-    // Получаем обновленный профиль
-    const listRes = await listUserProfiles(userId);
-    const activatedProfile = listRes.data?.find((p) => p.id === profileId);
+    // ВАЖНО: Синхронизируем оборудование из профиля в users_equipment
+    const { data: profileEquipment, error: equipErr } = await supabaseAdmin
+      .from("training_environment_profile_equipment")
+      .select("equipment_item_slug")
+      .eq("training_environment_profile_id", profileId);
 
-    return {
-      data: activatedProfile || null,
-      error: null,
+    if (!equipErr && profileEquipment) {
+      const equipmentSlugs = profileEquipment
+        .map((e) => e.equipment_item_slug)
+        .filter(Boolean);
+
+      console.log(
+        `[activateProfile] Syncing equipment from profile ${profileId}:`,
+        equipmentSlugs.length,
+        "items"
+      );
+
+      // Синхронизируем в users_equipment через replaceUserEquipment
+      const userProfileService = require("./userProfileService");
+      const { error: syncErr } = await userProfileService.replaceUserEquipment(
+        userId,
+        equipmentSlugs
+      );
+
+      if (syncErr) {
+        console.error("[activateProfile] Failed to sync equipment:", syncErr);
+        // Не прерываем активацию, но логируем ошибку
+      } else {
+        console.log(
+          `[activateProfile] ✅ Successfully synced ${equipmentSlugs.length} equipment items to users_equipment`
+        );
+      }
+    } else if (equipErr) {
+      console.warn("[activateProfile] Error loading profile equipment:", equipErr);
+      // Не прерываем активацию, но логируем предупреждение
+    } else {
+      // Профиль без оборудования - синхронизируем пустой массив
+      console.log(`[activateProfile] Profile ${profileId} has no equipment, syncing empty array`);
+      const userProfileService = require("./userProfileService");
+      const { error: syncErr } = await userProfileService.replaceUserEquipment(userId, []);
+
+      if (syncErr) {
+        console.error("[activateProfile] Failed to sync empty equipment:", syncErr);
+      }
+    }
+
+    // Загружаем активированный профиль для ответа
+    const { data: profile, error: profileErr } = await supabaseAdmin
+      .from("training_environment_profiles")
+      .select("id, name, slug")
+      .eq("id", profileId)
+      .single();
+
+    if (profileErr) {
+      return { data: null, error: profileErr };
+    }
+
+    // Загружаем оборудование
+    const { data: equipment, error: finalEquipErr } = await supabaseAdmin
+      .from("training_environment_profile_equipment")
+      .select("equipment_item_slug")
+      .eq("training_environment_profile_id", profileId);
+
+    const equipmentSlugs = (equipment || []).map((e) => e.equipment_item_slug).filter(Boolean);
+
+    const result = {
+      id: profile.id,
+      name: profile.name,
+      slug: profile.slug,
+      active: true,
+      equipment_count: equipmentSlugs.length,
+      equipment_slugs: equipmentSlugs,
     };
+
+    console.log(`[activateProfile] ✅ Activated profile: ${profileId} for userId: ${userId}`);
+    return { data: result, error: null };
   } catch (err) {
+    console.error("[activateProfile] Unexpected error:", err);
     return {
       data: null,
-      error: { message: err.message, code: "INTERNAL_ERROR" },
+      error: {
+        message: err.message,
+        code: "INTERNAL_ERROR",
+      },
     };
   }
 }
@@ -636,77 +543,62 @@ async function deleteProfile(userId, profileId) {
       return {
         data: null,
         error: {
-          message: "Profile not found or access denied",
+          message: "Profile not found or does not belong to user",
           code: "NOT_FOUND",
         },
       };
     }
 
-    // Удаляем связь пользователя с профилем (CASCADE удалит equipment)
-    const { error: deleteErr } = await supabaseAdmin
+    // Удаляем связь пользователя с профилем
+    const { error: linkErr } = await supabaseAdmin
       .from("users_training_environment_profiles")
       .delete()
       .eq("user_id", userId)
       .eq("training_environment_profile_id", profileId);
 
-    if (deleteErr) {
-      return {
-        data: null,
-        error: {
-          message: deleteErr.message || "Failed to delete profile",
-          code: deleteErr.code || "DATABASE_ERROR",
-        },
-      };
+    if (linkErr) {
+      console.error("[deleteProfile] Error deleting user profile link:", linkErr);
+      return { data: null, error: linkErr };
     }
 
-    // Удаляем тренажеры профиля
-    await supabaseAdmin
+    // Удаляем оборудование профиля
+    const { error: equipErr } = await supabaseAdmin
       .from("training_environment_profile_equipment")
       .delete()
       .eq("training_environment_profile_id", profileId);
 
-    // Удаляем сам профиль (если это кастомный, не базовый)
-    // Базовые профили (home, gym, workout) не удаляем
-    const { data: profile } = await supabaseAdmin
-      .from("training_environment_profiles")
-      .select("slug")
-      .eq("id", profileId)
-      .single();
-
-    // Удаляем только если это не базовый профиль
-    // (базовые имеют стандартные названия, кастомные - пользовательские)
-    if (profile) {
-      // Проверяем, есть ли другие пользователи с этим профилем
-      const { data: otherUsers } = await supabaseAdmin
-        .from("users_training_environment_profiles")
-        .select("user_id")
-        .eq("training_environment_profile_id", profileId)
-        .limit(1);
-
-      // Если никто больше не использует этот профиль, удаляем его
-      if (!otherUsers || otherUsers.length === 0) {
-        await supabaseAdmin
-          .from("training_environment_profiles")
-          .delete()
-          .eq("id", profileId);
-      }
+    if (equipErr) {
+      console.warn("[deleteProfile] Error deleting equipment:", equipErr);
+      // Не прерываем выполнение, но логируем
     }
 
-    return {
-      data: { success: true },
-      error: null,
-    };
+    // Удаляем сам профиль
+    const { error: profileErr } = await supabaseAdmin
+      .from("training_environment_profiles")
+      .delete()
+      .eq("id", profileId);
+
+    if (profileErr) {
+      console.error("[deleteProfile] Error deleting profile:", profileErr);
+      return { data: null, error: profileErr };
+    }
+
+    console.log(`[deleteProfile] ✅ Deleted profile: ${profileId} for userId: ${userId}`);
+    return { data: { success: true }, error: null };
   } catch (err) {
+    console.error("[deleteProfile] Unexpected error:", err);
     return {
       data: null,
-      error: { message: err.message, code: "INTERNAL_ERROR" },
+      error: {
+        message: err.message,
+        code: "INTERNAL_ERROR",
+      },
     };
   }
 }
 
 module.exports = {
   listUserProfiles,
-  getProfileEquipment,
   createProfile,
   updateProfile,
   activateProfile,
