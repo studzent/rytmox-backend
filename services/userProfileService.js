@@ -1270,5 +1270,6 @@ async function regenerateWorkoutsAfterEquipmentChange(userId, newEquipment) {
 module.exports = {
   getUserProfile,
   upsertUserProfile,
+  replaceUserEquipment,
 };
 
