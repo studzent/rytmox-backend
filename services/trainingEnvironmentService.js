@@ -196,7 +196,7 @@ async function createProfile(userId, name, slug, equipmentSlugs = []) {
     // Проверяем, есть ли уже связь пользователя с этим профилем
     const { data: existingLink, error: linkCheckErr } = await supabaseAdmin
       .from("users_training_environment_profiles")
-      .select("id")
+      .select("user_id, training_environment_profile_id")
       .eq("user_id", userId)
       .eq("training_environment_profile_id", profileId)
       .limit(1);
