@@ -173,6 +173,40 @@ async function setUserActiveTrainingEnvironment(userId, envRaw) {
   return { error: null };
 }
 
+/**
+ * Validate equipment slugs against equipment_items table
+ * @param {string[]} slugs - Array of equipment slugs to validate
+ * @returns {Promise<{validSlugs: string[], invalidSlugs: string[], error: object|null}>}
+ */
+async function validateEquipmentSlugs(slugs) {
+  if (!Array.isArray(slugs) || slugs.length === 0) {
+    return { validSlugs: [], invalidSlugs: [], error: null };
+  }
+
+  try {
+    const { data: validItems, error } = await supabaseAdmin
+      .from("equipment_items")
+      .select("slug")
+      .in("slug", slugs);
+
+    if (error) {
+      return { validSlugs: [], invalidSlugs: slugs, error };
+    }
+
+    const validSlugSet = new Set((validItems || []).map(item => item.slug));
+    const validSlugs = slugs.filter(slug => validSlugSet.has(slug));
+    const invalidSlugs = slugs.filter(slug => !validSlugSet.has(slug));
+
+    return { validSlugs, invalidSlugs, error: null };
+  } catch (err) {
+    return {
+      validSlugs: [],
+      invalidSlugs: slugs,
+      error: { message: err.message, code: "INTERNAL_ERROR" },
+    };
+  }
+}
+
 async function replaceUserEquipment(userId, equipmentSlugs) {
   console.log(`[replaceUserEquipment] Starting replacement for userId: ${userId}`, {
     equipmentSlugs: equipmentSlugs,
@@ -200,16 +234,54 @@ async function replaceUserEquipment(userId, equipmentSlugs) {
   
   if (slugs.length === 0) {
     console.log(`[replaceUserEquipment] No equipment slugs to insert, returning success`);
-    return { error: null };
+    return { error: null, validatedSlugs: [] };
+  }
+
+  // Validate equipment slugs against equipment_items table
+  const { validSlugs, invalidSlugs, error: validationError } = await validateEquipmentSlugs(slugs);
+  
+  if (validationError) {
+    console.error(`[replaceUserEquipment] ❌ Error validating equipment slugs:`, validationError);
+    // Continue with original slugs if validation fails (graceful degradation)
+  }
+
+  if (invalidSlugs.length > 0) {
+    console.warn(`[replaceUserEquipment] ⚠️ Invalid equipment slugs found:`, invalidSlugs);
+    // Log invalid slugs to ai_logs
+    try {
+      const aiService = require("./aiService");
+      await aiService.logAIRequest(
+        userId,
+        "onboarding_validation",
+        {
+          type: "equipment_validation",
+          invalid_slugs: invalidSlugs,
+          valid_slugs: validSlugs,
+        },
+        {
+          action: "filtered_invalid_equipment",
+          removed_count: invalidSlugs.length,
+        }
+      );
+    } catch (logError) {
+      console.error(`[replaceUserEquipment] Failed to log validation warning:`, logError);
+    }
+  }
+
+  const validatedSlugs = validSlugs.length > 0 ? validSlugs : slugs; // Fallback to original if validation failed
+  
+  if (validatedSlugs.length === 0) {
+    console.log(`[replaceUserEquipment] No valid equipment slugs to insert, returning success`);
+    return { error: null, validatedSlugs: [] };
   }
 
   await supabaseAdmin
     .from("users_equipment")
     .delete()
     .eq("user_id", userId)
-    .in("equipment_item_slug", slugs);
+    .in("equipment_item_slug", validatedSlugs);
 
-  const rows = slugs.map((slug) => ({
+  const rows = validatedSlugs.map((slug) => ({
     user_id: userId,
     equipment_item_slug: slug,
     availability: "available",
@@ -247,7 +319,7 @@ async function replaceUserEquipment(userId, equipmentSlugs) {
   }
   
   console.log(`[replaceUserEquipment] ✅ Successfully inserted ${insertedData?.length || 0} equipment rows`);
-  return { error: null };
+  return { error: null, validatedSlugs };
 }
 
 async function insertUserWeightMeasurement(userId, weightKg, source = "profile") {
@@ -400,6 +472,7 @@ async function upsertUserProfile(userId, payload) {
       height_cm: payload.height_cm,
       equipment_items_count: Array.isArray(payload.equipment_items) ? payload.equipment_items.length : 0,
       goals_count: Array.isArray(payload.goals) ? payload.goals.length : 0,
+      special_programs_count: Array.isArray(payload.special_programs) ? payload.special_programs.length : 0,
       coach_style: payload.coach_style,
       date_of_birth: payload.date_of_birth,
       notifications_enabled: payload.notifications_enabled,
@@ -416,7 +489,15 @@ async function upsertUserProfile(userId, payload) {
 
     // Добавляем только переданные поля (частичное обновление) - сохраняем в отдельные колонки
     if (payload.level !== undefined) {
-      profileData.level = payload.level;
+      // Ensure level is never null - default to 'intermediate' if not provided or invalid
+      if (payload.level && ['beginner', 'intermediate', 'advanced'].includes(payload.level)) {
+        profileData.level = payload.level;
+      } else {
+        profileData.level = 'intermediate';
+      }
+    } else {
+      // If level is not provided at all, set default to 'intermediate'
+      profileData.level = 'intermediate';
     }
     if (payload.goal !== undefined) {
       profileData.goal = payload.goal;
@@ -510,8 +591,12 @@ async function upsertUserProfile(userId, payload) {
         };
       }
     }
-    // special_programs НЕ сохраняем в users - этого поля нет в таблице
-    // Они могут быть в payload для совместимости, но игнорируем их
+    // Сохраняем special_programs в users.special_programs (TEXT[])
+    if (payload.special_programs !== undefined) {
+      profileData.special_programs = Array.isArray(payload.special_programs) ? payload.special_programs : [];
+      // Фильтруем 'none' из массива
+      profileData.special_programs = profileData.special_programs.filter(sp => sp !== 'none');
+    }
     if (payload.training_days_per_week !== undefined) {
       if (
         payload.training_days_per_week !== null &&
@@ -544,16 +629,33 @@ async function upsertUserProfile(userId, payload) {
       profileData.gender = payload.gender;
     }
     if (payload.contraindications !== undefined) {
-      profileData.contraindications =
-        typeof payload.contraindications === "object" && payload.contraindications !== null
-          ? payload.contraindications
-          : {};
+      if (typeof payload.contraindications === "object" && payload.contraindications !== null) {
+        // Normalize contraindication keys: lowercase, replace spaces/hyphens with underscores
+        const normalized = {};
+        for (const [key, value] of Object.entries(payload.contraindications)) {
+          const normalizedKey = String(key).toLowerCase().replace(/[\s-]/g, '_');
+          normalized[normalizedKey] = value;
+        }
+        profileData.contraindications = normalized;
+      } else {
+        profileData.contraindications = {};
+      }
     }
     if (payload.notifications_enabled !== undefined) {
       profileData.notifications_enabled = Boolean(payload.notifications_enabled);
     }
     if (payload.nutrition_enabled !== undefined) {
       profileData.nutrition_enabled = Boolean(payload.nutrition_enabled);
+    }
+    if (payload.weight_unit !== undefined) {
+      // Validate weight_unit: must be 'kg' or 'lb' (or 'lbs')
+      const validUnits = ['kg', 'lb', 'lbs'];
+      const normalizedUnit = payload.weight_unit === 'lbs' ? 'lb' : payload.weight_unit;
+      if (validUnits.includes(normalizedUnit)) {
+        profileData.weight_unit = normalizedUnit;
+      } else {
+        profileData.weight_unit = 'kg'; // Default to kg if invalid
+      }
     }
     if (payload.current_step !== undefined) {
       if (payload.current_step !== null && (isNaN(payload.current_step) || payload.current_step < 0)) {
@@ -566,6 +668,32 @@ async function upsertUserProfile(userId, payload) {
         };
       }
       profileData.current_step = payload.current_step;
+    }
+    if (payload.body_focus_zones !== undefined) {
+      profileData.body_focus_zones = Array.isArray(payload.body_focus_zones) ? payload.body_focus_zones : [];
+      // Validate max 3 selections
+      if (profileData.body_focus_zones.length > 3) {
+        return {
+          data: null,
+          error: {
+            message: "body_focus_zones array must contain at most 3 items",
+            code: "VALIDATION_ERROR",
+          },
+        };
+      }
+    }
+    if (payload.emphasized_muscles !== undefined) {
+      profileData.emphasized_muscles = Array.isArray(payload.emphasized_muscles) ? payload.emphasized_muscles : [];
+      // Validate max 4 selections
+      if (profileData.emphasized_muscles.length > 4) {
+        return {
+          data: null,
+          error: {
+            message: "emphasized_muscles array must contain at most 4 items",
+            code: "VALIDATION_ERROR",
+          },
+        };
+      }
     }
 
     // Логируем, что собрали в profileData
@@ -684,6 +812,7 @@ async function upsertUserProfile(userId, payload) {
       coach_style: result.data?.coach_style,
       date_of_birth: result.data?.date_of_birth,
       goals_count: Array.isArray(result.data?.goals) ? result.data.goals.length : 0,
+      special_programs_count: Array.isArray(result.data?.special_programs) ? result.data.special_programs.length : 0,
       notifications_enabled: result.data?.notifications_enabled,
       nutrition_enabled: result.data?.nutrition_enabled,
       current_step: result.data?.current_step,
@@ -717,8 +846,13 @@ async function upsertUserProfile(userId, payload) {
       }
     }
     if (payload.equipment_items !== undefined) {
+      // Получаем старое оборудование для сравнения
+      const { data: oldEquipmentData } = await getUserActiveEquipmentSlugs(userId);
+      const oldEquipment = oldEquipmentData || [];
+      const oldEquipmentSorted = [...oldEquipment].sort().join(',');
+      
       console.log(`[upsertUserProfile] Replacing equipment: ${Array.isArray(payload.equipment_items) ? payload.equipment_items.length : 0} items`);
-      const { error: eErr } = await replaceUserEquipment(userId, payload.equipment_items);
+      const { error: eErr, validatedSlugs } = await replaceUserEquipment(userId, payload.equipment_items);
       if (eErr) {
         console.error("[upsertUserProfile] ❌ Failed to replace users_equipment:", {
           message: eErr.message,
@@ -729,6 +863,41 @@ async function upsertUserProfile(userId, payload) {
         });
       } else {
         console.log(`[upsertUserProfile] ✅ Successfully replaced equipment`);
+        
+        // Clean equipment_weights to only include validated slugs
+        if (validatedSlugs && validatedSlugs.length > 0 && payload.equipment_weights) {
+          const validatedSlugSet = new Set(validatedSlugs);
+          const cleanedWeights = {};
+          for (const [slug, weight] of Object.entries(payload.equipment_weights)) {
+            if (validatedSlugSet.has(slug)) {
+              cleanedWeights[slug] = weight;
+            }
+          }
+          
+          // Update restrictions.equipment_weights with cleaned version
+          if (!profileData.restrictions) {
+            profileData.restrictions = {};
+          }
+          if (typeof profileData.restrictions === "object" && profileData.restrictions !== null && !Array.isArray(profileData.restrictions)) {
+            profileData.restrictions.equipment_weights = cleanedWeights;
+            console.log(`[upsertUserProfile] Cleaned equipment_weights: ${Object.keys(cleanedWeights).length} valid items (removed ${Object.keys(payload.equipment_weights).length - Object.keys(cleanedWeights).length} invalid)`);
+          }
+        }
+        
+        // Проверяем, изменилось ли оборудование
+        const newEquipment = validatedSlugs || payload.equipment_items || [];
+        const newEquipmentSorted = [...newEquipment].sort().join(',');
+        
+        if (oldEquipmentSorted !== newEquipmentSorted) {
+          console.log(`[upsertUserProfile] Equipment changed, regenerating future workouts`);
+          console.log(`[upsertUserProfile] Old equipment: ${oldEquipment.length} items, New equipment: ${newEquipment.length} items`);
+          
+          // Регенерируем тренировки в фоне (не блокируем ответ)
+          regenerateWorkoutsAfterEquipmentChange(userId, newEquipment).catch((error) => {
+            console.error(`[upsertUserProfile] Error regenerating workouts after equipment change:`, error);
+            // Не прерываем обновление профиля из-за ошибки регенерации
+          });
+        }
       }
     }
     if (payload.training_environment !== undefined) {
@@ -847,6 +1016,38 @@ async function upsertUserProfile(userId, payload) {
       }
     }
 
+    // Логируем успешное сохранение онбординга
+    try {
+      const aiService = require("./aiService");
+      const savedTablesSummary = {
+        users: true,
+        users_equipment: payload.equipment_items !== undefined,
+        users_training_environment_profiles: payload.training_environment !== undefined,
+        users_measurements: payload.weight_kg !== undefined,
+      };
+      await aiService.logAIRequest(
+        userId,
+        "onboarding_submit",
+        {
+          payload_keys: Object.keys(payload),
+          level: profileData.level,
+          goal: profileData.goal,
+          training_environment: payload.training_environment,
+          equipment_count: Array.isArray(payload.equipment_items) ? payload.equipment_items.length : 0,
+          has_contraindications: !!payload.contraindications && Object.keys(payload.contraindications).length > 0,
+          has_body_focus_zones: Array.isArray(payload.body_focus_zones) && payload.body_focus_zones.length > 0,
+          has_emphasized_muscles: Array.isArray(payload.emphasized_muscles) && payload.emphasized_muscles.length > 0,
+        },
+        {
+          saved_tables: savedTablesSummary,
+          success: true,
+        }
+      );
+    } catch (logError) {
+      console.error("[upsertUserProfile] Failed to log onboarding_submit:", logError);
+      // Don't fail the request if logging fails
+    }
+
     // Возвращаем обогащенный профиль, чтобы /profile был консистентен
     const { data: enriched, error: enrErr } = await getUserProfile(userId);
     if (enrErr) {
@@ -858,6 +1059,211 @@ async function upsertUserProfile(userId, payload) {
       data: null,
       error: { message: err.message, code: "INTERNAL_ERROR" },
     };
+  }
+}
+
+/**
+ * Получает даты тренировок на следующую неделю
+ * @param {number} daysPerWeek - Количество тренировок в неделю
+ * @returns {string[]} Массив дат в формате YYYY-MM-DD
+ */
+function getNextWeekWorkoutDates(daysPerWeek) {
+  if (!daysPerWeek || daysPerWeek <= 0) {
+    return [];
+  }
+
+  // Распределяем дни недели равномерно
+  const dayOffsets = [];
+  if (daysPerWeek === 1) {
+    dayOffsets.push(1); // Завтра
+  } else if (daysPerWeek === 2) {
+    dayOffsets.push(1, 4); // Пн, Чт
+  } else if (daysPerWeek === 3) {
+    dayOffsets.push(1, 3, 5); // Пн, Ср, Пт
+  } else if (daysPerWeek === 4) {
+    dayOffsets.push(1, 2, 4, 6); // Пн, Вт, Чт, Сб
+  } else if (daysPerWeek === 5) {
+    dayOffsets.push(1, 2, 3, 5, 6); // Пн-Ср, Пт-Сб
+  } else if (daysPerWeek === 6) {
+    dayOffsets.push(1, 2, 3, 4, 5, 6); // Пн-Сб
+  } else {
+    dayOffsets.push(1, 2, 3, 4, 5, 6, 7); // Все дни
+  }
+
+  const start = new Date();
+  start.setDate(start.getDate() + 1); // Начинаем с завтра
+
+  const dates = dayOffsets.map((offset) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + offset - 1);
+    return d.toISOString().split('T')[0]; // YYYY-MM-DD
+  });
+
+  return Array.from(new Set(dates)).sort();
+}
+
+/**
+ * Рассчитывает параметры тренировки на основе цели и уровня
+ * @param {string} goal - Цель тренировки
+ * @param {string} level - Уровень пользователя
+ * @param {number} dayOfWeek - День недели (0-6, опционально)
+ * @returns {{durationMinutes: number, exercisesCount: number}}
+ */
+function calculateWorkoutParams(goal, level, dayOfWeek = 0) {
+  // Базовые параметры в зависимости от цели
+  let baseDuration = 30;
+  let baseExercises = 8;
+
+  switch (goal) {
+    case 'fat_loss':
+      baseDuration = 30;
+      baseExercises = 7;
+      break;
+    case 'muscle_gain':
+      baseDuration = 50;
+      baseExercises = 10;
+      break;
+    case 'performance':
+      baseDuration = 37;
+      baseExercises = 8;
+      break;
+    case 'health':
+    default:
+      baseDuration = 25;
+      baseExercises = 7;
+      break;
+  }
+
+  // Вариация по дню недели
+  let dayVariation = 0;
+  if (dayOfWeek <= 1) {
+    dayVariation = 0.1; // Пн-Вт: +10%
+  } else if (dayOfWeek <= 3) {
+    dayVariation = 0; // Ср-Чт: без изменений
+  } else {
+    dayVariation = -0.05; // Пт-Вс: -5%
+  }
+
+  let finalDuration = Math.round(baseDuration * (1 + dayVariation));
+  let finalExercises = Math.round(baseExercises * (1 + dayVariation));
+
+  // Ограничения
+  finalDuration = Math.max(15, Math.min(90, finalDuration));
+  finalExercises = Math.max(4, Math.min(15, finalExercises));
+
+  return {
+    durationMinutes: finalDuration,
+    exercisesCount: finalExercises,
+  };
+}
+
+/**
+ * Получает индекс дня недели из даты (0 = Понедельник, 6 = Воскресенье)
+ * @param {string} dateStr - Дата в формате YYYY-MM-DD
+ * @returns {number} Индекс дня недели
+ */
+function getDayIndexFromDate(dateStr) {
+  const date = new Date(dateStr + 'T00:00:00.000Z');
+  const day = date.getUTCDay(); // 0 = Sunday, 1 = Monday, ...
+  return day === 0 ? 6 : day - 1; // Преобразуем в формат (0 = Monday)
+}
+
+/**
+ * Регенерирует тренировки после изменения оборудования
+ * @param {string} userId - ID пользователя
+ * @param {string[]} newEquipment - Новый список оборудования
+ */
+async function regenerateWorkoutsAfterEquipmentChange(userId, newEquipment) {
+  try {
+    console.log(`[regenerateWorkoutsAfterEquipmentChange] Starting regeneration for userId: ${userId}`);
+    
+    // 1. Удаляем все будущие тренировки (date >= сегодня)
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    
+    const { error: deleteError } = await supabaseAdmin
+      .from('workouts')
+      .delete()
+      .eq('user_id', userId)
+      .gte('date', today);
+    
+    if (deleteError) {
+      console.error(`[regenerateWorkoutsAfterEquipmentChange] Error deleting future workouts:`, deleteError);
+      return;
+    }
+    
+    console.log(`[regenerateWorkoutsAfterEquipmentChange] Deleted future workouts for userId: ${userId}`);
+    
+    // 2. Получаем профиль пользователя
+    const { data: profile, error: profileError } = await getUserProfile(userId);
+    
+    if (profileError || !profile) {
+      console.error(`[regenerateWorkoutsAfterEquipmentChange] Error getting user profile:`, profileError);
+      return;
+    }
+    
+    const goal = profile.goal || 'health';
+    const level = profile.level || 'beginner';
+    const trainingDaysPerWeek = profile.training_days_per_week || 0;
+    
+    if (!trainingDaysPerWeek || trainingDaysPerWeek <= 0) {
+      console.log(`[regenerateWorkoutsAfterEquipmentChange] No training days per week configured, skipping regeneration`);
+      return;
+    }
+    
+    console.log(`[regenerateWorkoutsAfterEquipmentChange] Profile data:`, {
+      goal,
+      level,
+      trainingDaysPerWeek,
+      equipmentCount: newEquipment.length,
+    });
+    
+    // 3. Получаем даты тренировок на неделю
+    const workoutDates = getNextWeekWorkoutDates(trainingDaysPerWeek);
+    
+    if (workoutDates.length === 0) {
+      console.log(`[regenerateWorkoutsAfterEquipmentChange] No workout dates to generate`);
+      return;
+    }
+    
+    console.log(`[regenerateWorkoutsAfterEquipmentChange] Generating ${workoutDates.length} workouts for dates:`, workoutDates);
+    
+    // 4. Генерируем тренировки для каждой даты в фоне
+    const aiService = require('./aiService');
+    
+    workoutDates.forEach((workoutDate, index) => {
+      // Небольшая задержка между запросами, чтобы не перегружать API
+      setTimeout(async () => {
+        try {
+          const dayIndex = getDayIndexFromDate(workoutDate);
+          const workoutParams = calculateWorkoutParams(goal, level, dayIndex);
+          
+          console.log(`[regenerateWorkoutsAfterEquipmentChange] Generating workout for ${workoutDate} (day ${dayIndex}) with params:`, workoutParams);
+          
+          const { data: workoutData, error: generateError } = await aiService.generateWorkout({
+            userId: userId,
+            equipment: newEquipment,
+            level: level,
+            goal: goal,
+            durationMinutes: workoutParams.durationMinutes,
+            exercisesCount: workoutParams.exercisesCount,
+            date: workoutDate,
+            ignoreHistory: true, // Игнорируем историю для разнообразия
+          });
+          
+          if (generateError) {
+            console.error(`[regenerateWorkoutsAfterEquipmentChange] Error generating workout for ${workoutDate}:`, generateError);
+          } else {
+            console.log(`[regenerateWorkoutsAfterEquipmentChange] Successfully generated workout for ${workoutDate}:`, workoutData?.workoutId);
+          }
+        } catch (error) {
+          console.error(`[regenerateWorkoutsAfterEquipmentChange] Unexpected error generating workout for ${workoutDate}:`, error);
+        }
+      }, index * 500); // Задержка 500ms между запросами
+    });
+    
+    console.log(`[regenerateWorkoutsAfterEquipmentChange] ✅ Regeneration process started for ${workoutDates.length} workouts`);
+  } catch (error) {
+    console.error(`[regenerateWorkoutsAfterEquipmentChange] Unexpected error:`, error);
   }
 }
 
