@@ -405,6 +405,13 @@ async function getUserProfile(userId) {
     }
 
     const equipmentItems = equipmentRes.data ?? [];
+    
+    // Извлекаем special_programs из restrictions.specialPrograms для обратной совместимости
+    const restrictions = data.restrictions || {};
+    const specialPrograms = Array.isArray(restrictions.specialPrograms) 
+      ? restrictions.specialPrograms 
+      : (Array.isArray(data.special_programs) ? data.special_programs : []);
+    
     console.log(`[getUserProfile] ✅ Returning profile with equipment_items:`, {
       userId: data.id,
       equipment_items: equipmentItems,
@@ -412,6 +419,7 @@ async function getUserProfile(userId) {
       equipment_items_sample: equipmentItems.slice(0, 10),
       training_environment: apiEnvFromDb(envRes.data),
       weight_kg: weightRes.data ?? null,
+      special_programs: specialPrograms,
     });
 
     return {
@@ -420,6 +428,7 @@ async function getUserProfile(userId) {
         weight_kg: weightRes.data ?? null,
         equipment_items: equipmentItems,
         training_environment: apiEnvFromDb(envRes.data),
+        special_programs: specialPrograms, // Добавляем для обратной совместимости
       },
       error: null,
     };
@@ -808,6 +817,17 @@ async function upsertUserProfile(userId, payload) {
       return { data: null, error: result.error };
     }
 
+    // Извлекаем special_programs из restrictions.specialPrograms для обратной совместимости
+    const restrictions = result.data?.restrictions || {};
+    const specialPrograms = Array.isArray(restrictions.specialPrograms) 
+      ? restrictions.specialPrograms 
+      : (Array.isArray(result.data?.special_programs) ? result.data.special_programs : []);
+    
+    // Добавляем special_programs в result.data для обратной совместимости
+    if (result.data) {
+      result.data.special_programs = specialPrograms;
+    }
+
     console.log(`[upsertUserProfile] ✅ Successfully saved profile for user ${userId}`);
     console.log(`[upsertUserProfile] ===== SAVED TO DATABASE =====`);
     console.log(`[upsertUserProfile] Saved data keys (${Object.keys(result.data || {}).length}):`, Object.keys(result.data || {}));
@@ -823,7 +843,7 @@ async function upsertUserProfile(userId, payload) {
       coach_style: result.data?.coach_style,
       date_of_birth: result.data?.date_of_birth,
       goals_count: Array.isArray(result.data?.goals) ? result.data.goals.length : 0,
-      special_programs_count: Array.isArray(result.data?.special_programs) ? result.data.special_programs.length : 0,
+      special_programs_count: specialPrograms.length,
       notifications_enabled: result.data?.notifications_enabled,
       nutrition_enabled: result.data?.nutrition_enabled,
       current_step: result.data?.current_step,
