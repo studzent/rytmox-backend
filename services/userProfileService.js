@@ -591,11 +591,22 @@ async function upsertUserProfile(userId, payload) {
         };
       }
     }
-    // Сохраняем special_programs в users.special_programs (TEXT[])
+    // Сохраняем special_programs в restrictions, так как колонка special_programs может не существовать
     if (payload.special_programs !== undefined) {
-      profileData.special_programs = Array.isArray(payload.special_programs) ? payload.special_programs : [];
-      // Фильтруем 'none' из массива
-      profileData.special_programs = profileData.special_programs.filter(sp => sp !== 'none');
+      // Инициализируем restrictions, если его еще нет
+      if (!profileData.restrictions) {
+        profileData.restrictions = {};
+      }
+      // Проверяем, что restrictions - это объект (не массив и не null)
+      if (typeof profileData.restrictions === "object" && profileData.restrictions !== null && !Array.isArray(profileData.restrictions)) {
+        const filteredPrograms = Array.isArray(payload.special_programs) 
+          ? payload.special_programs.filter(sp => sp !== 'none')
+          : [];
+        profileData.restrictions.specialPrograms = filteredPrograms;
+        console.log(`[upsertUserProfile] Added special_programs to restrictions: ${filteredPrograms.length} items`);
+      } else {
+        console.warn(`[upsertUserProfile] Cannot add special_programs: restrictions is not a valid object`);
+      }
     }
     if (payload.training_days_per_week !== undefined) {
       if (
