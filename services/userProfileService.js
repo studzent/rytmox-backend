@@ -536,6 +536,22 @@ async function upsertUserProfile(userId, payload) {
         console.warn(`[upsertUserProfile] Cannot add equipment_weights: restrictions is not a valid object`);
       }
     }
+    // weight_unit сохраняем в restrictions, так как колонка weight_unit может не существовать
+    if (payload.weight_unit !== undefined) {
+      // Инициализируем restrictions, если его еще нет
+      if (!profileData.restrictions) {
+        profileData.restrictions = {};
+      }
+      // Проверяем, что restrictions - это объект (не массив и не null)
+      if (typeof profileData.restrictions === "object" && profileData.restrictions !== null && !Array.isArray(profileData.restrictions)) {
+        const normalizedUnit = payload.weight_unit === 'lbs' ? 'lb' : payload.weight_unit;
+        const validUnits = ['kg', 'lb'];
+        profileData.restrictions.weightUnit = validUnits.includes(normalizedUnit) ? normalizedUnit : 'kg';
+        console.log(`[upsertUserProfile] Added weight_unit to restrictions: ${profileData.restrictions.weightUnit}`);
+      } else {
+        console.warn(`[upsertUserProfile] Cannot add weight_unit: restrictions is not a valid object`);
+      }
+    }
     // training_environment/equipment_items/weight_kg НЕ пишем в users.
     // Они сохраняются в нормализованные таблицы: users_training_environment_profiles, users_equipment, users_measurements.
     if (payload.training_environment !== undefined) {
@@ -716,6 +732,18 @@ async function upsertUserProfile(userId, payload) {
       }
     }
 
+    // Удаляем special_programs и weight_unit из profileData, так как этих колонок не существует
+    // special_programs уже сохранены в restrictions.specialPrograms выше
+    // weight_unit уже сохранен в restrictions.weightUnit выше
+    if ('special_programs' in profileData) {
+      delete profileData.special_programs;
+      console.log(`[upsertUserProfile] Removed special_programs from profileData (stored in restrictions.specialPrograms instead)`);
+    }
+    if ('weight_unit' in profileData) {
+      delete profileData.weight_unit;
+      console.log(`[upsertUserProfile] Removed weight_unit from profileData (stored in restrictions.weightUnit instead)`);
+    }
+    
     // Логируем, что собрали в profileData
     console.log(`[upsertUserProfile] ===== PROFILE DATA PREPARED =====`);
     console.log(`[upsertUserProfile] Profile data keys (${Object.keys(profileData).length}):`, Object.keys(profileData));
