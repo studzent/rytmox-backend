@@ -683,16 +683,8 @@ async function upsertUserProfile(userId, payload) {
     if (payload.nutrition_enabled !== undefined) {
       profileData.nutrition_enabled = Boolean(payload.nutrition_enabled);
     }
-    if (payload.weight_unit !== undefined) {
-      // Validate weight_unit: must be 'kg' or 'lb' (or 'lbs')
-      const validUnits = ['kg', 'lb', 'lbs'];
-      const normalizedUnit = payload.weight_unit === 'lbs' ? 'lb' : payload.weight_unit;
-      if (validUnits.includes(normalizedUnit)) {
-        profileData.weight_unit = normalizedUnit;
-      } else {
-        profileData.weight_unit = 'kg'; // Default to kg if invalid
-      }
-    }
+    // weight_unit обрабатывается выше (строки 539-554) и сохраняется в restrictions.weightUnit
+    // Не добавляем его в profileData, так как этой колонки нет в таблице users
     if (payload.current_step !== undefined) {
       if (payload.current_step !== null && (isNaN(payload.current_step) || payload.current_step < 0)) {
         return {

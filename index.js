@@ -26,6 +26,7 @@ const exerciseRoutes = require("./routes/exercises");
 const equipmentRoutes = require("./routes/equipment");
 const userMetricsRoutes = require("./routes/userMetrics");
 const locationsRoutes = require("./routes/locations");
+const chatRoutes = require("./routes/chat");
 
 app.use("/auth", authRoutes);
 app.use("/ai", aiRoutes);
@@ -36,6 +37,7 @@ app.use("/exercises", exerciseRoutes);
 app.use("/equipment", equipmentRoutes);
 app.use("/metrics", userMetricsRoutes);
 app.use("/locations", locationsRoutes);
+app.use("/chat", chatRoutes);
 
 // DEFAULT
 app.get("/", (req, res) => {

@@ -27,7 +27,7 @@ const ANONYMOUS_USER_ID = "00000000-0000-0000-0000-000000000001";
 async function logAIRequest(userId, requestType, requestData, responseData) {
   try {
     // Валидация типа запроса
-    const validTypes = ["workout", "nutrition", "form_check"];
+    const validTypes = ["workout", "nutrition", "form_check", "onboarding_submit", "onboarding_validation", "chat"];
     if (!validTypes.includes(requestType)) {
       return {
         data: null,
@@ -229,6 +229,8 @@ async function generateWorkout({
           goal: profile.goal,
           preferred_equipment: profile.preferred_equipment,
           preferred_muscles: profile.preferred_muscles,
+          body_focus_zones: profile.body_focus_zones,
+          emphasized_muscles: profile.emphasized_muscles,
           language: profile.language,
           restrictions: profile.restrictions,
           equipment_items: profile.equipment_items,
@@ -273,6 +275,11 @@ async function generateWorkout({
       }
       if ((!targetMuscles || targetMuscles.length === 0) && userProfile.preferred_muscles && userProfile.preferred_muscles.length > 0) {
         targetMuscles = userProfile.preferred_muscles;
+      }
+      // If emphasized_muscles exist, prioritize them over preferred_muscles
+      if (userProfile.emphasized_muscles && userProfile.emphasized_muscles.length > 0) {
+        targetMuscles = userProfile.emphasized_muscles;
+        console.log(`[aiService] Using emphasized_muscles from profile:`, targetMuscles);
       }
       if (!goal && userProfile.goal) {
         goal = userProfile.goal;
@@ -454,6 +461,69 @@ async function generateWorkout({
     // Используем их как filteredExercises
     let filteredExercises = exercises;
     
+    // Scoring system for emphasized_muscles and body_focus_zones
+    if (userProfile && (userProfile.emphasized_muscles || userProfile.body_focus_zones)) {
+      const emphasizedMuscles = (userProfile.emphasized_muscles || []).map(m => m.toLowerCase());
+      const bodyFocusZones = (userProfile.body_focus_zones || []).map(z => z.toLowerCase());
+      
+      // Mapping body_focus_zones to muscle groups
+      const bodyFocusToMuscleMap = {
+        'core_abs': ['abs', 'core', 'obliques', 'deep_core'],
+        'glutes': ['glutes', 'glute'],
+        'legs': ['quads', 'hamstrings', 'calves', 'adductors', 'legs'],
+        'arms': ['biceps', 'triceps', 'forearms', 'arms'],
+        'back_posture': ['lats', 'traps', 'back', 'rear_deltoids', 'deltoids_rear'],
+        'endurance': [], // Endurance is more about exercise type, not muscle
+      };
+      
+      // Score each exercise
+      filteredExercises = filteredExercises.map(exercise => {
+        let score = 0;
+        const mainMuscle = (exercise.main_muscle || '').toLowerCase();
+        const secondaryMuscles = (exercise.secondary_muscles || []).map(m => m.toLowerCase());
+        
+        // +3 if main_muscle in emphasized_muscles
+        if (emphasizedMuscles.length > 0 && emphasizedMuscles.includes(mainMuscle)) {
+          score += 3;
+        }
+        
+        // +1 for each secondary muscle match in emphasized_muscles
+        if (emphasizedMuscles.length > 0) {
+          secondaryMuscles.forEach(muscle => {
+            if (emphasizedMuscles.includes(muscle)) {
+              score += 1;
+            }
+          });
+        }
+        
+        // +1 if main_muscle maps to body_focus_zones
+        if (bodyFocusZones.length > 0) {
+          bodyFocusZones.forEach(zone => {
+            const muscleGroups = bodyFocusToMuscleMap[zone] || [];
+            if (muscleGroups.some(mg => mainMuscle.includes(mg) || mg.includes(mainMuscle))) {
+              score += 1;
+            }
+          });
+        }
+        
+        return { ...exercise, emphasisScore: score };
+      });
+      
+      // Sort by score descending, then shuffle within same score groups
+      filteredExercises.sort((a, b) => {
+        if (b.emphasisScore !== a.emphasisScore) {
+          return b.emphasisScore - a.emphasisScore;
+        }
+        return Math.random() - 0.5; // Randomize within same score
+      });
+      
+      const scoredCount = filteredExercises.filter(ex => ex.emphasisScore > 0).length;
+      console.log(`[aiService] Exercise scoring: ${scoredCount} exercises have emphasis score > 0 (out of ${filteredExercises.length} total)`);
+    } else {
+      // Add score property even if no emphasis, for consistency
+      filteredExercises = filteredExercises.map(ex => ({ ...ex, emphasisScore: 0 }));
+    }
+    
     // Если после фильтрации ничего не осталось и equipment был не пустой - ошибка
     if (!filteredExercises || filteredExercises.length === 0) {
       if (equipment && equipment.length > 0) {
@@ -477,10 +547,154 @@ async function generateWorkout({
       }
     }
 
-    // Рандомизация массива упражнений
-    const shuffledExercises = filteredExercises.sort(() => Math.random() - 0.5);
-
+    // Фильтрация по противопоказаниям (программная фильтрация)
+    if (userProfile && userProfile.contraindications && Object.keys(userProfile.contraindications).length > 0) {
+      const contraindications = Object.keys(userProfile.contraindications).filter(
+        key => userProfile.contraindications[key] === true
+      );
+      
+      if (contraindications.length > 0) {
+        // Маппинг противопоказаний к группам мышц и типам упражнений, которые нужно исключить
+        const contraindicationFilters = {
+          lower_back: {
+            muscleGroups: ['back', 'lower_back'],
+            exerciseSlugs: ['deadlift', 'good_morning', 'hyperextension', 'romanian_deadlift'],
+            keywords: ['deadlift', 'back extension', 'hyperextension']
+          },
+          neck: {
+            muscleGroups: ['neck', 'traps'],
+            exerciseSlugs: ['shrug', 'neck_extension'],
+            keywords: ['neck', 'shrug']
+          },
+          knees: {
+            muscleGroups: ['quads', 'knees'],
+            exerciseSlugs: ['squat', 'lunge', 'jump', 'leg_press', 'hack_squat'],
+            keywords: ['squat', 'lunge', 'jump', 'leg press']
+          },
+          shoulders: {
+            muscleGroups: ['shoulders', 'deltoids'],
+            exerciseSlugs: ['overhead_press', 'handstand_pushup', 'shoulder_press'],
+            keywords: ['overhead', 'shoulder press', 'handstand']
+          },
+          elbows_wrists: {
+            muscleGroups: ['forearms', 'biceps', 'triceps'],
+            exerciseSlugs: ['wrist_curl', 'reverse_curl'],
+            keywords: ['wrist', 'elbow']
+          },
+          ankles: {
+            exerciseSlugs: ['jump', 'sprint', 'plyometric'],
+            keywords: ['jump', 'sprint', 'plyometric', 'bounding']
+          },
+          high_blood_pressure: {
+            exerciseSlugs: ['heavy_deadlift', 'heavy_squat'],
+            keywords: ['heavy', 'max']
+          },
+          shortness_of_breath: {
+            exerciseSlugs: ['sprint', 'hiit', 'burpee'],
+            keywords: ['sprint', 'hiit', 'burpee', 'cardio']
+          },
+          dizziness_during_exercise: {
+            exerciseSlugs: ['handstand', 'inversion'],
+            keywords: ['handstand', 'inversion', 'upside down']
+          },
+          high_heart_rate: {
+            exerciseSlugs: ['sprint', 'hiit', 'burpee'],
+            keywords: ['sprint', 'hiit', 'burpee', 'cardio']
+          }
+        };
+        
+        // Сохраняем количество до фильтрации для логирования
+        const beforeContraindicationCount = filteredExercises.length;
+        
+        // Фильтруем упражнения
+        filteredExercises = filteredExercises.filter(exercise => {
+          const exerciseSlug = (exercise.slug || '').toLowerCase();
+          const exerciseName = ((exercise.name_en || '') + ' ' + (exercise.name_ru || '')).toLowerCase();
+          const mainMuscle = (exercise.main_muscle || '').toLowerCase();
+          
+          // Проверяем каждое противопоказание
+          for (const contraindication of contraindications) {
+            const filter = contraindicationFilters[contraindication];
+            if (!filter) continue;
+            
+            // Проверка по slug
+            if (filter.exerciseSlugs) {
+              for (const slugPattern of filter.exerciseSlugs) {
+                if (exerciseSlug.includes(slugPattern.toLowerCase())) {
+                  console.log(`[aiService] Filtered out exercise ${exercise.slug} due to contraindication: ${contraindication}`);
+                  return false;
+                }
+              }
+            }
+            
+            // Проверка по группам мышц
+            if (filter.muscleGroups && mainMuscle) {
+              for (const muscleGroup of filter.muscleGroups) {
+                if (mainMuscle.includes(muscleGroup.toLowerCase())) {
+                  // Для некоторых противопоказаний исключаем только определенные типы упражнений
+                  // Например, для lower_back исключаем только упражнения с осевой нагрузкой
+                  if (contraindication === 'lower_back') {
+                    // Исключаем только упражнения с высокой нагрузкой на спину
+                    if (exerciseSlug.includes('deadlift') || exerciseSlug.includes('squat') || 
+                        exerciseSlug.includes('good_morning') || exerciseSlug.includes('hyperextension')) {
+                      console.log(`[aiService] Filtered out exercise ${exercise.slug} due to contraindication: ${contraindication}`);
+                      return false;
+                    }
+                  } else {
+                    console.log(`[aiService] Filtered out exercise ${exercise.slug} due to contraindication: ${contraindication} (muscle group: ${mainMuscle})`);
+                    return false;
+                  }
+                }
+              }
+            }
+            
+            // Проверка по ключевым словам в названии
+            if (filter.keywords) {
+              for (const keyword of filter.keywords) {
+                if (exerciseName.includes(keyword.toLowerCase()) || exerciseSlug.includes(keyword.toLowerCase())) {
+                  console.log(`[aiService] Filtered out exercise ${exercise.slug} due to contraindication: ${contraindication} (keyword: ${keyword})`);
+                  return false;
+                }
+              }
+            }
+          }
+          
+          return true;
+        });
+        
+        const afterCount = filteredExercises.length;
+        const removedCount = beforeContraindicationCount - afterCount;
+        console.log(`[aiService] After contraindication filtering: ${afterCount} exercises remaining (removed ${removedCount})`);
+        
+        // Log contraindication filtering statistics
+        if (removedCount > 0) {
+          try {
+            await logAIRequest(
+              userId || null,
+              "onboarding_validation",
+              {
+                type: "contraindication_filtering",
+                contraindications: contraindications,
+                exercises_before: beforeContraindicationCount,
+                exercises_after: afterCount,
+                removed_count: removedCount,
+              },
+              {
+                action: "filtered_exercises_by_contraindications",
+                success: true,
+              }
+            );
+          } catch (logError) {
+            console.error(`[aiService] Failed to log contraindication filtering:`, logError);
+          }
+        }
+      }
+    }
+    
     // 5. Формирование trainingContext для AI
+    // Извлекаем equipment_weights из restrictions, если они там есть
+    const equipmentWeights = userProfile?.restrictions?.equipment_weights || null;
+    
     const trainingContext = {
       profile: {
         level: userProfile?.level || level,
@@ -492,6 +706,7 @@ async function generateWorkout({
       equipment: {
         trainingEnvironment: userProfile?.training_environment || null,
         equipmentItems: userProfile?.equipment_items || [],
+        equipmentWeights: equipmentWeights, // Веса оборудования для рекомендации весов в упражнениях
       },
       trainingContext: {
         recentSessions: ignoreHistory ? [] : recentSessions,
@@ -504,17 +719,26 @@ async function generateWorkout({
 IMPORTANT INSTRUCTIONS:
 - Consider the user's level (beginner/intermediate/advanced) when selecting exercises and setting intensity
 - Use the user's current weight (weightKg) for load recommendations and calculations
+- If equipment weights are provided, use them as reference points for weight recommendations in exercises
 - Analyze recent training sessions to avoid overloading the same muscle groups consecutively
 - Progressively increase difficulty/volume safely based on the user's history
 - Strictly respect any restrictions or injuries mentioned
 - Rotate muscle groups to allow proper recovery
 - If recent sessions show heavy training of certain muscles, focus on different muscle groups or allow recovery
+- CRITICAL: Always create VARIED workouts - avoid repeating the same exercises or exercise combinations from recent sessions
+- When selecting exercises, prioritize DIVERSITY - choose different exercises even if they target similar muscle groups
+- Vary the order of exercises, rep ranges, and rest periods to create unique workout experiences
+- If generating multiple workouts, ensure each one is distinctly different from previous ones
 
 Respond ONLY in valid JSON format.`;
 
     // Ограничиваем количество упражнений в промпте для ускорения генерации
-    // Берем максимум 40 упражнений (достаточно для выбора 8)
-    const exercisesForPrompt = shuffledExercises.slice(0, 40);
+    // Берем top 80-150 упражнений (приоритизируем по emphasis score)
+    // Если есть scoring, берем top scored exercises; иначе берем первые 100
+    const topN = userProfile && (userProfile.emphasized_muscles || userProfile.body_focus_zones) ? 150 : 100;
+    // Рандомизация массива упражнений (shuffle within score groups was already done during scoring)
+    const shuffledExercises = filteredExercises.sort(() => Math.random() - 0.5);
+    const exercisesForPrompt = shuffledExercises.slice(0, topN);
     
     const availableExercises = exercisesForPrompt.map((ex) => ({
       slug: ex.slug,
@@ -527,11 +751,39 @@ Respond ONLY in valid JSON format.`;
     console.log(`[aiService] Using ${availableExercises.length} exercises in prompt (from ${shuffledExercises.length} total)`);
 
     // Формируем информацию об ограничениях из профиля
+    // ПРИМЕЧАНИЕ: Упражнения уже отфильтрованы программно выше, но добавляем информацию в промпт для дополнительной безопасности
     let restrictionsInfo = "";
     if (userProfile && userProfile.restrictions && Object.keys(userProfile.restrictions).length > 0) {
       restrictionsInfo = `\nIMPORTANT - User restrictions and injuries (MUST be strictly followed):
 ${JSON.stringify(userProfile.restrictions, null, 2)}
-You MUST avoid exercises that could aggravate these conditions. If any exercise in the available list conflicts with these restrictions, DO NOT include it in the workout plan.`;
+Note: Exercises have been pre-filtered to avoid these conditions, but you MUST double-check and avoid any exercises that could aggravate these conditions.`;
+    }
+    
+    // Добавляем информацию о противопоказаниях, если они есть
+    if (userProfile && userProfile.contraindications && Object.keys(userProfile.contraindications).length > 0) {
+      const activeContraindications = Object.keys(userProfile.contraindications).filter(
+        key => userProfile.contraindications[key] === true
+      );
+      if (activeContraindications.length > 0) {
+        restrictionsInfo += `\n\nUser contraindications (exercises have been pre-filtered, but verify):
+${activeContraindications.join(", ")}`;
+      }
+    }
+
+    // Формируем информацию о body focus zones и emphasized muscles
+    let muscleFocusInfo = "";
+    if (userProfile) {
+      if (userProfile.body_focus_zones && Array.isArray(userProfile.body_focus_zones) && userProfile.body_focus_zones.length > 0) {
+        muscleFocusInfo += `\nBody Focus Zones (add emphasis to these areas, but maintain full-body balance): ${userProfile.body_focus_zones.join(", ")}\n`;
+      }
+      if (userProfile.emphasized_muscles && Array.isArray(userProfile.emphasized_muscles) && userProfile.emphasized_muscles.length > 0) {
+        muscleFocusInfo += `\nEmphasized Muscles (increase volume and priority for these muscles, but maintain full-body balance and recovery logic): ${userProfile.emphasized_muscles.join(", ")}\n`;
+        muscleFocusInfo += `IMPORTANT: When emphasizing specific muscles, you MUST:\n`;
+        muscleFocusInfo += `- Increase sets/reps for exercises targeting these muscles\n`;
+        muscleFocusInfo += `- Prioritize these muscles in exercise selection\n`;
+        muscleFocusInfo += `- BUT always maintain full-body balance (don't ignore other muscle groups)\n`;
+        muscleFocusInfo += `- Ensure proper recovery time between sessions targeting the same muscles\n`;
+      }
     }
 
     // Формируем информацию о тренировочном окружении и оборудовании
@@ -542,6 +794,14 @@ You MUST avoid exercises that could aggravate these conditions. If any exercise 
       }
       if (userProfile.equipment_items && Array.isArray(userProfile.equipment_items) && userProfile.equipment_items.length > 0) {
         environmentInfo += `- Available equipment items: ${userProfile.equipment_items.join(", ")}\n`;
+      }
+      // Добавляем информацию о весах оборудования для рекомендации весов в упражнениях
+      if (equipmentWeights && Object.keys(equipmentWeights).length > 0) {
+        environmentInfo += `- Equipment weights (use these for weight recommendations in exercises):\n`;
+        for (const [equipmentSlug, weight] of Object.entries(equipmentWeights)) {
+          environmentInfo += `  * ${equipmentSlug}: ${weight} kg\n`;
+        }
+        environmentInfo += `IMPORTANT: When recommending weights for exercises using this equipment, use the weights specified above as reference points. Adjust based on exercise difficulty and user level.\n`;
       }
     }
 
@@ -557,6 +817,11 @@ You MUST avoid exercises that could aggravate these conditions. If any exercise 
       contextInfo += `\nRecent training sessions (use this to avoid overloading same muscles and plan progression):\n${JSON.stringify(trainingContext.trainingContext.recentSessions, null, 2)}\n`;
     }
 
+    // Добавляем инструкцию о вариативности, если история игнорируется
+    const varietyInstruction = ignoreHistory 
+      ? `\nIMPORTANT: This is a regeneration request. Create a COMPLETELY DIFFERENT workout from any previous ones. Use different exercises, different rep ranges, and different exercise order. Prioritize variety and novelty.`
+      : ``;
+
     const userPrompt = `Create a workout plan with the following requirements:
 - User level: ${level}
 - Goal: ${goal}
@@ -565,8 +830,8 @@ You MUST avoid exercises that could aggravate these conditions. If any exercise 
 - Number of exercises: ${exercisesCount}
 - Available equipment: ${equipment.join(", ")}
 - Target muscles: ${targetMuscles.length > 0 ? targetMuscles.join(", ") : "Full Body"}
-${environmentInfo}${contextInfo}${userProfile ? `- User profile data: ${JSON.stringify(profileSnapshot)}` : ""}
-${restrictionsInfo}
+${environmentInfo}${contextInfo}${muscleFocusInfo}${userProfile ? `- User profile data: ${JSON.stringify(profileSnapshot)}` : ""}
+${restrictionsInfo}${varietyInstruction}
 
 Full training context:
 ${JSON.stringify(trainingContext, null, 2)}
@@ -712,17 +977,39 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
 
     const mappedPlan = [];
     const missingSlugs = [];
+    const correctedSlugs = [];
 
     for (const item of plan) {
-      const exercise = exerciseMap.get(item.exercise_slug);
+      let exercise = exerciseMap.get(item.exercise_slug);
+      
+      // If slug not found, try to find a similar exercise from candidates
       if (!exercise) {
         missingSlugs.push(item.exercise_slug);
-        continue;
+        
+        // Try to find a replacement: look for exercises with similar main_muscle
+        // or just pick a random one from candidates as fallback
+        if (shuffledExercises.length > 0) {
+          // Try to find by main_muscle match first
+          const mainMuscle = item.exercise_slug.toLowerCase();
+          const replacement = shuffledExercises.find(ex => 
+            ex.main_muscle?.toLowerCase().includes(mainMuscle) || 
+            mainMuscle.includes(ex.main_muscle?.toLowerCase() || '')
+          ) || shuffledExercises[0]; // Fallback to first candidate
+          
+          exercise = replacement;
+          correctedSlugs.push({
+            original: item.exercise_slug,
+            corrected: replacement.slug,
+          });
+          console.warn(`[aiService] LLM returned unknown slug: ${item.exercise_slug}, replacing with: ${replacement.slug}`);
+        } else {
+          continue; // Skip if no candidates available
+        }
       }
 
       mappedPlan.push({
         exercise_id: exercise.id,
-        exercise_slug: item.exercise_slug,
+        exercise_slug: exercise.slug, // Use actual exercise slug, not LLM's
         name_en: exercise.name_en,
         name_ru: exercise.name_ru || null,
         main_muscle: exercise.main_muscle,
@@ -737,7 +1024,31 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
     }
 
     if (missingSlugs.length > 0) {
-      console.warn(`Missing exercises for slugs: ${missingSlugs.join(", ")}`);
+      console.warn(`[aiService] Missing exercises for slugs: ${missingSlugs.join(", ")}`);
+    }
+    
+    if (correctedSlugs.length > 0) {
+      console.warn(`[aiService] Corrected ${correctedSlugs.length} invalid exercise slugs from LLM response`);
+      // Log corrections to ai_logs
+      try {
+        await logAIRequest(
+          userId || null,
+          "onboarding_validation",
+          {
+            type: "llm_exercise_validation",
+            invalid_slugs: missingSlugs,
+            corrections: correctedSlugs,
+            total_plan_items: plan.length,
+            valid_items: mappedPlan.length,
+          },
+          {
+            action: "validated_and_corrected_llm_exercise_slugs",
+            success: true,
+          }
+        );
+      } catch (logError) {
+        console.error(`[aiService] Failed to log LLM validation:`, logError);
+      }
     }
 
     if (mappedPlan.length === 0) {
