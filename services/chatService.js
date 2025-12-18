@@ -1,10 +1,11 @@
 const { supabaseAdmin } = require("../utils/supabaseClient");
 const openai = require("../utils/openaiClient");
-const { getSystemPromptRu, buildChatUserPromptRu } = require("../prompts/chatPromptsRu");
+const { getSystemPromptRu, buildChatUserPromptRu, getHandoffPhrase } = require("../prompts/chatPromptsRu");
 const userProfileService = require("./userProfileService");
 const userMetricsService = require("./userMetricsService");
 const workoutService = require("./workoutService");
 const aiService = require("./aiService");
+const chatRouterService = require("./chatRouterService");
 const crypto = require("crypto");
 
 /**
@@ -511,10 +512,68 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
       console.warn(`[chatService] Failed to build context:`, contextError.message);
     }
 
-    // Шаг 4: Определить speaker и intent
-    const speaker = determineSpeaker(text, mode);
+    // Шаг 3.5: Получить метаданные thread для проверки pending_handoff
+    let threadMetadata = null;
+    try {
+      const { data: threadData } = await supabaseAdmin
+        .from("chat_threads")
+        .select("metadata")
+        .eq("id", resolvedThreadId)
+        .single();
+      threadMetadata = threadData?.metadata || null;
+    } catch (err) {
+      console.warn(`[chatService] Failed to load thread metadata:`, err.message);
+    }
+
+    // Шаг 4: Маршрутизация через router
+    const routingResult = chatRouterService.routeMessage(text, mode, null, threadMetadata);
+    console.log(`[chatService] Routing result:`, {
+      selected_roles: routingResult.selected_roles,
+      mode: routingResult.mode,
+      handoff_suggested_to: routingResult.handoff_suggested_to,
+      safety_flags: routingResult.safety_flags,
+    });
+
+    // Обработка подтверждения/отказа handoff
+    let actualMode = mode;
+    if (routingResult.execute_handoff) {
+      // Выполняем handoff
+      const handoffTo = routingResult.handoff_to;
+      const handoffNotice = `Подключился ${chatRouterService.AGENT_DISPLAY_NAMES[handoffTo]}`;
+
+      // Сохраняем системное сообщение о handoff
+      await saveAssistantMessage(resolvedThreadId, userId, handoffNotice, {
+        message_type: "handoff_notice",
+        agent_role: handoffTo,
+        agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[handoffTo],
+        handoff_from: mode,
+        handoff_to: handoffTo,
+      });
+
+      // Очищаем pending_handoff и обновляем mode в thread
+      await supabaseAdmin
+        .from("chat_threads")
+        .update({
+          mode: handoffTo,
+          metadata: { ...threadMetadata, pending_handoff: null },
+        })
+        .eq("id", resolvedThreadId);
+
+      // Меняем mode для дальнейшего выполнения
+      actualMode = handoffTo;
+    } else if (routingResult.cancel_handoff) {
+      // Отменяем handoff
+      await supabaseAdmin
+        .from("chat_threads")
+        .update({ metadata: { ...threadMetadata, pending_handoff: null } })
+        .eq("id", resolvedThreadId);
+    }
+
+    // Определяем speaker на основе routing
+    const selectedRole = routingResult.selected_roles[0];
+    const speaker = selectedRole || determineSpeaker(text, actualMode);
     const intent = determineIntent(text);
-    console.log(`[chatService] Determined speaker: ${speaker}, intent: ${intent}`);
+    console.log(`[chatService] Selected speaker: ${speaker}, intent: ${intent}, actualMode: ${actualMode}`);
 
     // Шаг 5: Получить последние сообщения для контекста
     const { data: lastMessages, error: messagesError } = await getThreadMessages(resolvedThreadId, 15);
@@ -579,9 +638,51 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
       };
     }
 
-    const assistantText = completion.choices[0].message.content;
+    let assistantText = completion.choices[0].message.content;
 
-    // Шаг 7: Обработка intent (генерация/редактирование тренировки)
+    // Шаг 7: Обработка handoff предложения
+    let handoffMessage = null;
+    let finalAssistantText = assistantText;
+    let messageType = "response";
+
+    if (routingResult.handoff_suggested_to && routingResult.handoff_mode === "ask_confirm") {
+      // Предлагаем handoff с подтверждением
+      const handoffPhrase = getHandoffPhrase(speaker, routingResult.handoff_suggested_to, routingResult.reason);
+      finalAssistantText = `${assistantText}\n\n${handoffPhrase}`;
+      handoffMessage = handoffPhrase;
+      messageType = "handoff_question";
+
+      // Сохраняем pending_handoff в thread metadata
+      await supabaseAdmin
+        .from("chat_threads")
+        .update({
+          metadata: {
+            ...threadMetadata,
+            pending_handoff: {
+              to: routingResult.handoff_suggested_to,
+              from: speaker,
+              reason: routingResult.reason,
+            },
+          },
+        })
+        .eq("id", resolvedThreadId);
+    } else if (routingResult.handoff_mode === "seamless" && routingResult.selected_roles[0] !== mode) {
+      // Seamless handoff - добавляем системное сообщение
+      const handoffTo = routingResult.selected_roles[0];
+      const handoffNotice = `Подключился ${chatRouterService.AGENT_DISPLAY_NAMES[handoffTo]}`;
+
+      // Сохраняем системное сообщение о handoff
+      await saveAssistantMessage(resolvedThreadId, userId, handoffNotice, {
+        message_type: "handoff_notice",
+        agent_role: handoffTo,
+        agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[handoffTo],
+        handoff_from: mode,
+        handoff_to: handoffTo,
+        routing_reason: routingResult.reason,
+      });
+    }
+
+    // Шаг 8: Обработка intent (генерация/редактирование тренировки)
     let workoutId = null;
     if (intent === "generate_workout" || intent === "edit_workout") {
       console.log(`[chatService] Handling workout intent: ${intent}`);
@@ -610,7 +711,7 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
       }
     }
 
-    // Шаг 8: Сохранить assistant message
+    // Шаг 9: Сохранить assistant message с расширенными metadata
     const metadata = {
       mode: mode,
       speaker: speaker,
@@ -618,12 +719,21 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
       model: "gpt-4o-mini",
       workout_id: workoutId || null,
       ts: new Date().toISOString(),
+      // Новые поля для routing
+      agent_role: speaker,
+      agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[speaker] || speaker,
+      routing_reason: routingResult.reason,
+      confidence: routingResult.confidence || 0.8,
+      handoff_suggested_to: routingResult.handoff_suggested_to || null,
+      handoff_mode: routingResult.handoff_mode || null,
+      safety_flags: routingResult.safety_flags || [],
+      message_type: messageType,
     };
 
     const { data: assistantMessage, error: assistantMsgError } = await saveAssistantMessage(
       resolvedThreadId,
       userId,
-      assistantText,
+      finalAssistantText,
       metadata
     );
 
@@ -674,16 +784,37 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
     const totalDuration = Date.now() - functionStartTime;
     console.log(`[chatService] ✅ sendChatMessage completed successfully in ${totalDuration}ms`);
 
+    // Формируем routing объект для ответа
+    const routing = {
+      selected_roles: routingResult.selected_roles,
+      mode: routingResult.mode,
+      safety_flags: routingResult.safety_flags || [],
+      handoff_suggested_to: routingResult.handoff_suggested_to || null,
+      handoff_mode: routingResult.handoff_mode || null,
+      require_user_confirmation: routingResult.require_user_confirmation || false,
+      reason: routingResult.reason,
+    };
+
+    // Формируем ui_hints
+    const activeAgentRole = routingResult.selected_roles[0] || speaker;
+    const ui_hints = {
+      show_typing_as: `${chatRouterService.AGENT_DISPLAY_NAMES[activeAgentRole]} печатает...`,
+      active_agent_badge: activeAgentRole,
+      active_agent_name: chatRouterService.AGENT_DISPLAY_NAMES[activeAgentRole] || activeAgentRole,
+    };
+
     return {
       data: {
         threadId: resolvedThreadId,
         assistantMessage: {
           id: assistantMessage.id || `msg-${Date.now()}`,
-          content: assistantMessage.content || assistantText,
+          content: assistantMessage.content || finalAssistantText,
           metadata: assistantMessage.metadata || metadata,
           created_at: assistantMessage.created_at || new Date().toISOString(),
         },
         workout: workoutId ? { id: workoutId } : null,
+        routing: routing,
+        ui_hints: ui_hints,
       },
       error: null,
     };
