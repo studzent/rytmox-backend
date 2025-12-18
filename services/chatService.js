@@ -717,7 +717,32 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
 
       const multiResults = await Promise.all(multiPromises);
       
-      // Сохраняем все сообщения
+      // Создаем handoff_notice для каждого специалиста перед их ответами
+      const handoffNotices = [];
+      for (const role of routingResult.selected_roles) {
+        const handoffNotice = `Подключился ${chatRouterService.AGENT_DISPLAY_NAMES[role]}`;
+        const { data: savedNotice } = await saveAssistantMessage(resolvedThreadId, userId, handoffNotice, {
+          message_type: "handoff_notice",
+          agent_role: role,
+          agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[role],
+          routing_reason: routingResult.reason,
+        });
+        
+        if (savedNotice) {
+          handoffNotices.push({
+            id: savedNotice.id,
+            content: savedNotice.content,
+            metadata: savedNotice.metadata || {
+              message_type: "handoff_notice",
+              agent_role: role,
+              agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[role],
+            },
+            created_at: savedNotice.created_at,
+          });
+        }
+      }
+      
+      // Сохраняем все сообщения от специалистов
       for (const result of multiResults) {
         if (result.success && result.text) {
           const metadata = {
@@ -780,11 +805,15 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
         `${chatRouterService.AGENT_DISPLAY_NAMES[role]} печатает...`
       ).join(', ');
 
+      // Объединяем handoff_notice и ответы специалистов в правильном порядке
+      // Сначала все handoff_notice, потом все ответы
+      const allMessages = [...handoffNotices, ...assistantMessages];
+      
       return {
         data: {
           threadId: resolvedThreadId,
-          assistantMessages: assistantMessages, // Массив сообщений
-          assistantMessage: assistantMessages[0], // Первое для обратной совместимости
+          assistantMessages: allMessages, // Массив сообщений (handoff_notice + ответы)
+          assistantMessage: allMessages[0], // Первое для обратной совместимости
           workout: null,
           routing: routing,
           ui_hints: {
