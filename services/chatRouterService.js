@@ -16,9 +16,9 @@ const AGENT_ROLES = {
 const AGENT_DISPLAY_NAMES = {
   [AGENT_ROLES.COORDINATOR]: 'Команда',
   [AGENT_ROLES.TRAINER]: 'Тренер',
-  [AGENT_ROLES.PSYCHOLOGIST]: 'Mental Coach',
+  [AGENT_ROLES.PSYCHOLOGIST]: 'Ментал-Коуч',
   [AGENT_ROLES.DIETITIAN]: 'Нутрициолог',
-  [AGENT_ROLES.DOCTOR]: 'Health Coach',
+  [AGENT_ROLES.DOCTOR]: 'Хелс-Коуч',
 };
 
 /**
