@@ -279,19 +279,34 @@ function detectHandoffConfirmation(text) {
     'хорошо',
     'подключай',
     'подключи',
+    'подключить',
     'согласен',
     'согласна',
     'угу',
     'ага',
     'да, подключи',
     'да, подключай',
+    'да, подключить',
     'подключи тренера',
     'подключи психолога',
     'подключи диетолога',
     'подключи врача',
+    'подключить тренера',
+    'подключить психолога',
+    'подключить диетолога',
+    'подключить врача',
+    'давай подключи',
+    'давай подключай',
+    'давай подключить',
   ];
 
-  return confirmPhrases.some((phrase) => lowerText === phrase || lowerText.startsWith(phrase + ' '));
+  // Проверяем точное совпадение или начало фразы
+  const exactMatch = confirmPhrases.some((phrase) => lowerText === phrase || lowerText.startsWith(phrase + ' '));
+  
+  // Также проверяем, содержит ли текст "подключ" + любое окончание
+  const hasConnectKeyword = lowerText.includes('подключ');
+  
+  return exactMatch || hasConnectKeyword;
 }
 
 /**
@@ -542,6 +557,35 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
         handoff_suggested_to: null,
         handoff_mode: null,
         confidence: 0.5,
+      };
+    }
+
+    // Проверка комбинированных вопросов (тренировки + питание)
+    if (trainingScore > 0.3 && nutritionScore > 0.3) {
+      // Оба вопроса одновременно - multi-response
+      return {
+        selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.DIETITIAN],
+        mode: 'multi',
+        require_user_confirmation: false,
+        reason: 'Вопрос про тренировки и питание одновременно',
+        safety_flags: safetyFlags,
+        handoff_suggested_to: null,
+        handoff_mode: null,
+        confidence: Math.max(trainingScore, nutritionScore),
+      };
+    }
+
+    // Проверка тренировки + психология
+    if (trainingScore > 0.3 && psychologyScore > 0.3) {
+      return {
+        selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.PSYCHOLOGIST],
+        mode: 'multi',
+        require_user_confirmation: false,
+        reason: 'Вопрос про тренировки и мотивацию',
+        safety_flags: safetyFlags,
+        handoff_suggested_to: null,
+        handoff_mode: null,
+        confidence: Math.max(trainingScore, psychologyScore),
       };
     }
 

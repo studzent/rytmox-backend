@@ -593,7 +593,136 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
       messagesHistory = historyLines.join("\n");
     }
 
-    // Шаг 6: Вызвать OpenAI
+    // Шаг 6: Вызвать OpenAI (single или multi)
+    let assistantMessages = [];
+    
+    // Multi-response: несколько специалистов отвечают одновременно
+    if (routingResult.mode === "multi" && routingResult.selected_roles.length > 1) {
+      console.log(`[chatService] Multi-response mode: ${routingResult.selected_roles.join(", ")}`);
+      
+      const userPrompt = buildChatUserPromptRu(
+        {
+          profile: context?.profile || "",
+          recentWorkouts: context?.recentWorkouts || "",
+          lastMessages: messagesHistory,
+        },
+        text
+      );
+
+      // Вызываем OpenAI для каждого специалиста параллельно
+      const multiPromises = routingResult.selected_roles.map(async (role) => {
+        const systemPrompt = getSystemPromptRu(role);
+        try {
+          const apiCall = openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            temperature: 0.7,
+          });
+
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => {
+              reject(new Error("OpenAI API request timeout after 60 seconds"));
+            }, 60000);
+          });
+
+          const completion = await Promise.race([apiCall, timeoutPromise]);
+          return {
+            role: role,
+            text: completion.choices[0].message.content,
+            success: true,
+          };
+        } catch (error) {
+          console.error(`[chatService] Error calling OpenAI for ${role}:`, error);
+          return {
+            role: role,
+            text: null,
+            success: false,
+            error: error.message,
+          };
+        }
+      });
+
+      const multiResults = await Promise.all(multiPromises);
+      
+      // Сохраняем все сообщения
+      for (const result of multiResults) {
+        if (result.success && result.text) {
+          const metadata = {
+            mode: mode,
+            speaker: result.role,
+            intent: intent,
+            model: "gpt-4o-mini",
+            workout_id: null,
+            ts: new Date().toISOString(),
+            agent_role: result.role,
+            agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[result.role] || result.role,
+            routing_reason: routingResult.reason,
+            confidence: routingResult.confidence || 0.8,
+            safety_flags: routingResult.safety_flags || [],
+            message_type: "response",
+          };
+
+          const { data: savedMessage } = await saveAssistantMessage(
+            resolvedThreadId,
+            userId,
+            result.text,
+            metadata
+          );
+
+          if (savedMessage) {
+            assistantMessages.push({
+              id: savedMessage.id,
+              content: savedMessage.content,
+              metadata: savedMessage.metadata || metadata,
+              created_at: savedMessage.created_at,
+            });
+          }
+        }
+      }
+
+      // Если хотя бы одно сообщение успешно, продолжаем
+      if (assistantMessages.length === 0) {
+        return {
+          data: null,
+          error: {
+            message: "Failed to get responses from any specialist",
+            code: "OPENAI_API_ERROR",
+          },
+        };
+      }
+
+      // Для multi-response возвращаем массив сообщений
+      const routing = {
+        selected_roles: routingResult.selected_roles,
+        mode: routingResult.mode,
+        safety_flags: routingResult.safety_flags || [],
+        handoff_suggested_to: null,
+        handoff_mode: null,
+        require_user_confirmation: false,
+        reason: routingResult.reason,
+      };
+
+      return {
+        data: {
+          threadId: resolvedThreadId,
+          assistantMessages: assistantMessages, // Массив сообщений
+          assistantMessage: assistantMessages[0], // Первое для обратной совместимости
+          workout: null,
+          routing: routing,
+          ui_hints: {
+            show_typing_as: `${assistantMessages.length} специалиста отвечают...`,
+            active_agent_badge: routingResult.selected_roles[0],
+            active_agent_name: chatRouterService.AGENT_DISPLAY_NAMES[routingResult.selected_roles[0]],
+          },
+        },
+        error: null,
+      };
+    }
+
+    // Single response: один специалист отвечает
     const systemPrompt = getSystemPromptRu(speaker);
     const userPrompt = buildChatUserPromptRu(
       {
