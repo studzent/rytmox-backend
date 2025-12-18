@@ -615,14 +615,16 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
         data: {
           threadId: resolvedThreadId,
           assistantMessage: {
-            id: savedMessage?.id || `handoff-q-${Date.now()}`,
+            id: savedMessage?.id || `handoff-offer-${Date.now()}`,
             content: handoffPhrase,
             metadata: {
-              message_type: "handoff_question",
+              message_type: "handoff_offer",
               agent_role: currentSpeaker,
               agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[currentSpeaker] || currentSpeaker,
               handoff_suggested_to: routingResult.handoff_suggested_to,
               handoff_mode: "ask_confirm",
+              handoff_id: handoffId,
+              routing_reason: routingResult.reason,
             },
             created_at: savedMessage?.created_at || new Date().toISOString(),
           },
