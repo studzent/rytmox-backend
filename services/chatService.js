@@ -577,7 +577,10 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
       const currentSpeaker = actualMode;
       const handoffPhrase = getHandoffPhrase(currentSpeaker, routingResult.handoff_suggested_to, routingResult.reason);
       
-      console.log(`[chatService] Handoff question triggered: ${currentSpeaker} -> ${routingResult.handoff_suggested_to}`);
+      console.log(`[chatService] Handoff offer triggered: ${currentSpeaker} -> ${routingResult.handoff_suggested_to}`);
+      
+      // Генерируем handoff_id для отслеживания
+      const handoffId = crypto.randomUUID();
       
       // Сохраняем pending_handoff в thread metadata
       await supabaseAdmin
@@ -586,21 +589,25 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
           metadata: {
             ...threadMetadata,
             pending_handoff: {
+              id: handoffId,
               to: routingResult.handoff_suggested_to,
               from: currentSpeaker,
               reason: routingResult.reason,
+              status: "pending",
+              created_at: new Date().toISOString(),
             },
           },
         })
         .eq("id", resolvedThreadId);
 
-      // Сохраняем handoff_question сообщение
+      // Сохраняем handoff_offer сообщение
       const { data: savedMessage } = await saveAssistantMessage(resolvedThreadId, userId, handoffPhrase, {
-        message_type: "handoff_question",
+        message_type: "handoff_offer",
         agent_role: currentSpeaker,
         agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[currentSpeaker] || currentSpeaker,
         handoff_suggested_to: routingResult.handoff_suggested_to,
         handoff_mode: "ask_confirm",
+        handoff_id: handoffId,
         routing_reason: routingResult.reason,
       });
 
@@ -1062,6 +1069,199 @@ async function getThread(threadId, limit = 50) {
   }
 }
 
+/**
+ * Принять handoff на тренера
+ * @param {string} userId - ID пользователя
+ * @param {string} fromThreadId - ID исходного thread (откуда передают)
+ * @param {string} fromRole - Роль специалиста, который передает
+ * @param {string} lastUserMessage - Последнее сообщение пользователя
+ * @param {string} handoffId - ID handoff
+ * @returns {Promise<{data: object|null, error: object|null}>}
+ */
+async function acceptHandoffToTrainer(userId, fromThreadId, fromRole, lastUserMessage, handoffId) {
+  try {
+    console.log(`[chatService] Accepting handoff to trainer: userId=${userId}, fromThreadId=${fromThreadId}, handoffId=${handoffId}`);
+    
+    // Получить/создать чат тренера
+    const { data: trainerThreadId, error: threadError } = await resolveThread(userId, 'trainer', null);
+    if (threadError) {
+      return { data: null, error: threadError };
+    }
+
+    // Создать summary для handoff_request
+    const fromRoleName = chatRouterService.AGENT_DISPLAY_NAMES[fromRole] || fromRole;
+    const summary = `Пользователь спрашивает: "${lastUserMessage}". Передал ${fromRoleName}.`;
+
+    // Сохранить сообщение в чате тренера с типом handoff_request
+    const { data: handoffMessage, error: msgError } = await saveAssistantMessage(
+      trainerThreadId,
+      userId,
+      summary,
+      {
+        message_type: "handoff_request",
+        agent_role: "trainer",
+        agent_display_name: "Тренер",
+        from_role: fromRole,
+        from_chat_id: fromThreadId,
+        handoff_id: handoffId,
+        last_user_message: lastUserMessage,
+      }
+    );
+
+    if (msgError) {
+      return { data: null, error: msgError };
+    }
+
+    // Обновить pending_handoff в исходном thread: status = 'accepted'
+    let threadMetadata = null;
+    try {
+      const { data: threadData } = await supabaseAdmin
+        .from("chat_threads")
+        .select("metadata")
+        .eq("id", fromThreadId)
+        .single();
+      threadMetadata = threadData?.metadata || null;
+    } catch (err) {
+      console.warn(`[chatService] Failed to load thread metadata:`, err.message);
+    }
+
+    if (threadMetadata?.pending_handoff) {
+      await supabaseAdmin
+        .from("chat_threads")
+        .update({
+          metadata: {
+            ...threadMetadata,
+            pending_handoff: {
+              ...threadMetadata.pending_handoff,
+              status: "accepted",
+            },
+          },
+        })
+        .eq("id", fromThreadId);
+    }
+
+    // Обновить unread_count в чате тренера
+    let trainerThreadMetadata = null;
+    try {
+      const { data: trainerThreadData } = await supabaseAdmin
+        .from("chat_threads")
+        .select("metadata")
+        .eq("id", trainerThreadId)
+        .single();
+      trainerThreadMetadata = trainerThreadData?.metadata || null;
+    } catch (err) {
+      console.warn(`[chatService] Failed to load trainer thread metadata:`, err.message);
+    }
+
+    const currentUnread = trainerThreadMetadata?.unread_count || 0;
+    await supabaseAdmin
+      .from("chat_threads")
+      .update({
+        metadata: {
+          ...trainerThreadMetadata,
+          unread_count: currentUnread + 1,
+        },
+      })
+      .eq("id", trainerThreadId);
+
+    console.log(`[chatService] ✅ Handoff accepted: trainerThreadId=${trainerThreadId}, handoffId=${handoffId}`);
+    
+    return {
+      data: {
+        ok: true,
+        trainer_chat_id: trainerThreadId,
+        handoff_id: handoffId,
+      },
+      error: null,
+    };
+  } catch (err) {
+    console.error(`[chatService] ❌ Error accepting handoff:`, err);
+    return {
+      data: null,
+      error: {
+        message: err.message || "Internal server error",
+        code: "INTERNAL_ERROR",
+      },
+    };
+  }
+}
+
+/**
+ * Отменить handoff
+ * @param {string} userId - ID пользователя
+ * @param {string} threadId - ID thread
+ * @returns {Promise<{data: object|null, error: object|null}>}
+ */
+async function cancelHandoff(userId, threadId) {
+  try {
+    console.log(`[chatService] Canceling handoff: userId=${userId}, threadId=${threadId}`);
+    
+    // Получить метаданные thread
+    let threadMetadata = null;
+    try {
+      const { data: threadData } = await supabaseAdmin
+        .from("chat_threads")
+        .select("metadata, user_id")
+        .eq("id", threadId)
+        .single();
+      
+      if (threadData.user_id !== userId) {
+        return {
+          data: null,
+          error: {
+            message: "Thread does not belong to user",
+            code: "UNAUTHORIZED",
+          },
+        };
+      }
+      
+      threadMetadata = threadData?.metadata || null;
+    } catch (err) {
+      return {
+        data: null,
+        error: {
+          message: `Thread not found: ${err.message}`,
+          code: "THREAD_NOT_FOUND",
+        },
+      };
+    }
+
+    // Обновить pending_handoff: status = 'canceled' или удалить
+    if (threadMetadata?.pending_handoff) {
+      await supabaseAdmin
+        .from("chat_threads")
+        .update({
+          metadata: {
+            ...threadMetadata,
+            pending_handoff: {
+              ...threadMetadata.pending_handoff,
+              status: "canceled",
+            },
+          },
+        })
+        .eq("id", threadId);
+    }
+
+    console.log(`[chatService] ✅ Handoff canceled: threadId=${threadId}`);
+    
+    return {
+      data: {
+        ok: true,
+      },
+      error: null,
+    };
+  } catch (err) {
+    console.error(`[chatService] ❌ Error canceling handoff:`, err);
+    return {
+      data: null,
+      error: {
+        message: err.message || "Internal server error",
+        code: "INTERNAL_ERROR",
+      },
+    };
+  }
+}
+
 module.exports = {
   resolveThread,
   saveUserMessage,
@@ -1072,6 +1272,8 @@ module.exports = {
   determineIntent,
   sendChatMessage,
   getThread,
+  acceptHandoffToTrainer,
+  cancelHandoff,
 };
 
 
