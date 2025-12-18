@@ -1,4 +1,5 @@
 const chatService = require("../services/chatService");
+const transcriptionService = require("../services/transcriptionService");
 
 /**
  * Отправить сообщение в чат
@@ -206,6 +207,57 @@ exports.cancelHandoff = async (req, res) => {
     return res.status(200).json(data);
   } catch (err) {
     console.error("Unexpected error in cancelHandoff controller:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * Транскрибировать голосовое сообщение
+ * POST /chat/transcribe
+ */
+exports.transcribeAudio = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromBody = req.body.userId;
+    const userId = userIdFromToken || userIdFromBody || null;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { audioBase64, mimeType, language } = req.body;
+
+    if (!audioBase64) {
+      return res.status(400).json({
+        error: "audioBase64 is required",
+      });
+    }
+
+    // Сохраняем base64 аудио во временный файл
+    const { data: tempFilePath, error: saveError } = await transcriptionService.saveBase64AudioToFile(
+      audioBase64,
+      mimeType || 'audio/m4a'
+    );
+
+    if (saveError) {
+      return res.status(400).json({ error: saveError.message });
+    }
+
+    // Транскрибируем аудио
+    const { data: transcription, error: transcribeError } = await transcriptionService.transcribeAudio(
+      tempFilePath,
+      language || 'ru'
+    );
+
+    if (transcribeError) {
+      return res.status(500).json({ error: transcribeError.message });
+    }
+
+    return res.status(200).json({ text: transcription });
+  } catch (err) {
+    console.error("Unexpected error in transcribeAudio controller:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 };

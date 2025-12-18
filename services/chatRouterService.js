@@ -563,9 +563,39 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
       };
     }
 
+    // Проверка трех тем одновременно: тренировка + питание + психология (приоритет)
+    if (trainingScore > 0.3 && nutritionScore > 0.3 && psychologyScore > 0.3) {
+      console.log(`[router] Multi-response triggered: TRAINER + DIETITIAN + PSYCHOLOGIST (trainingScore: ${trainingScore}, nutritionScore: ${nutritionScore}, psychologyScore: ${psychologyScore})`);
+      return {
+        selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.DIETITIAN, AGENT_ROLES.PSYCHOLOGIST],
+        mode: 'multi',
+        require_user_confirmation: false,
+        reason: 'Вопрос про тренировки, питание и мотивацию',
+        safety_flags: safetyFlags,
+        handoff_suggested_to: null,
+        handoff_mode: null,
+        confidence: Math.max(trainingScore, nutritionScore, psychologyScore),
+      };
+    }
+
     // Проверка комбинированных вопросов (тренировки + питание)
     if (trainingScore > 0.3 && nutritionScore > 0.3) {
       // Оба вопроса одновременно - multi-response
+      console.log(`[router] Multi-response triggered: TRAINER + DIETITIAN (trainingScore: ${trainingScore}, nutritionScore: ${nutritionScore})`);
+      return {
+        selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.DIETITIAN],
+        mode: 'multi',
+        require_user_confirmation: false,
+        reason: 'Вопрос про тренировки и питание одновременно',
+        safety_flags: safetyFlags,
+        handoff_suggested_to: null,
+        handoff_mode: null,
+        confidence: Math.max(trainingScore, nutritionScore),
+      };
+    }
+
+    // Проверка тренировки + питание
+    if (trainingScore > 0.3 && nutritionScore > 0.3) {
       console.log(`[router] Multi-response triggered: TRAINER + DIETITIAN (trainingScore: ${trainingScore}, nutritionScore: ${nutritionScore})`);
       return {
         selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.DIETITIAN],
@@ -591,6 +621,21 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
         handoff_suggested_to: null,
         handoff_mode: null,
         confidence: Math.max(trainingScore, psychologyScore),
+      };
+    }
+
+    // Проверка питание + психология
+    if (nutritionScore > 0.3 && psychologyScore > 0.3) {
+      console.log(`[router] Multi-response triggered: DIETITIAN + PSYCHOLOGIST (nutritionScore: ${nutritionScore}, psychologyScore: ${psychologyScore})`);
+      return {
+        selected_roles: [AGENT_ROLES.DIETITIAN, AGENT_ROLES.PSYCHOLOGIST],
+        mode: 'multi',
+        require_user_confirmation: false,
+        reason: 'Вопрос про питание и мотивацию',
+        safety_flags: safetyFlags,
+        handoff_suggested_to: null,
+        handoff_mode: null,
+        confidence: Math.max(nutritionScore, psychologyScore),
       };
     }
 
@@ -622,7 +667,7 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
         selected_roles: [AGENT_ROLES.PSYCHOLOGIST],
         mode: 'single',
         require_user_confirmation: false,
-        reason: 'Координатор подключает психолога',
+        reason: 'Координатор подключает Ментал-Коуч',
         safety_flags: safetyFlags,
         handoff_suggested_to: null,
         handoff_mode: 'seamless',
