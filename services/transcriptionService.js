@@ -24,16 +24,34 @@ async function transcribeAudio(audioFilePath, language = 'ru') {
       };
     }
 
+    // Проверяем размер файла (Whisper API лимит: 25MB)
+    const stats = fs.statSync(audioFilePath);
+    const fileSizeInMB = stats.size / (1024 * 1024);
+    console.log(`[transcriptionService] File size: ${fileSizeInMB.toFixed(2)} MB`);
+    
+    if (fileSizeInMB > 25) {
+      return {
+        data: null,
+        error: {
+          message: `Audio file is too large (${fileSizeInMB.toFixed(2)} MB). Maximum size is 25 MB.`,
+          code: "FILE_TOO_LARGE",
+        },
+      };
+    }
+
     // Создаем File объект для OpenAI API
     const audioFile = fs.createReadStream(audioFilePath);
     const filename = path.basename(audioFilePath);
 
-    // Вызываем OpenAI Whisper API
+    // Вызываем OpenAI Whisper API с увеличенным таймаутом для долгих аудио
+    // Whisper API может обрабатывать до 25MB файлы, что примерно 25 минут аудио
     const transcription = await openai.audio.transcriptions.create({
       file: audioFile,
       model: "whisper-1",
       language: language,
       response_format: "text",
+    }, {
+      timeout: 300000, // 5 минут таймаут для долгих аудио
     });
 
     console.log(`[transcriptionService] Transcription successful: ${transcription.substring(0, 100)}...`);

@@ -444,29 +444,44 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
     if (trainingScore > 0.4) {
       // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
       if (chatType !== AGENT_ROLES.TRAINER) {
-      console.log(`[router] Handoff triggered: ${chatType} -> TRAINER (trainingScore: ${trainingScore})`);
+        console.log(`[router] Handoff triggered: ${chatType} -> TRAINER (trainingScore: ${trainingScore})`);
+        return {
+          selected_roles: [chatType],
+          mode: 'handoff',
+          require_user_confirmation: true,
+          reason: 'Вопрос про тренировки в чате другого специалиста',
+          safety_flags: [],
+          handoff_suggested_to: AGENT_ROLES.TRAINER,
+          handoff_mode: 'ask_confirm',
+          confidence: trainingScore,
+        };
+      }
+
+      // Если тренер получает вопрос про питание одновременно - предложить handoff к нутрициологу
+      if (chatType === AGENT_ROLES.TRAINER && nutritionScore > 0.3) {
+        console.log(`[router] Trainer received nutrition question, suggesting handoff to DIETITIAN (nutritionScore: ${nutritionScore})`);
+        return {
+          selected_roles: [AGENT_ROLES.TRAINER],
+          mode: 'handoff',
+          require_user_confirmation: true,
+          reason: 'Вопрос про питание в чате тренера',
+          safety_flags: safetyFlags,
+          handoff_suggested_to: AGENT_ROLES.DIETITIAN,
+          handoff_mode: 'ask_confirm',
+          confidence: nutritionScore,
+        };
+      }
+
       return {
-        selected_roles: [chatType],
-        mode: 'handoff',
-        require_user_confirmation: true,
-        reason: 'Вопрос про тренировки в чате другого специалиста',
-        safety_flags: [],
-        handoff_suggested_to: AGENT_ROLES.TRAINER,
-        handoff_mode: 'ask_confirm',
+        selected_roles: [AGENT_ROLES.TRAINER],
+        mode: 'single',
+        require_user_confirmation: false,
+        reason: 'Вопрос про тренировки, технику или упражнения',
+        safety_flags: safetyFlags,
+        handoff_suggested_to: null,
+        handoff_mode: null,
         confidence: trainingScore,
       };
-    }
-
-    return {
-      selected_roles: [AGENT_ROLES.TRAINER],
-      mode: 'single',
-      require_user_confirmation: false,
-      reason: 'Вопрос про тренировки, технику или упражнения',
-      safety_flags: safetyFlags,
-      handoff_suggested_to: null,
-      handoff_mode: null,
-      confidence: trainingScore,
-    };
     }
 
     // Правило C: Питание (для не-COORDINATOR чатов)
@@ -477,86 +492,117 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
       // Если есть признаки РПП/эмоциональных проблем, предложить handoff к психологу
       if (hasEDSigns) {
         if (chatType === AGENT_ROLES.DIETITIAN) {
-        // В 1:1 с диетологом предложить handoff к психологу
+          // В 1:1 с диетологом предложить handoff к психологу
+          return {
+            selected_roles: [AGENT_ROLES.DIETITIAN],
+            mode: 'handoff',
+            require_user_confirmation: true,
+            reason: 'Признаки эмоциональных проблем с едой',
+            safety_flags: [],
+            handoff_suggested_to: AGENT_ROLES.PSYCHOLOGIST,
+            handoff_mode: 'ask_confirm',
+            confidence: nutritionScore,
+          };
+        }
+      }
+
+      // Если нутрициолог получает вопрос про тренировки одновременно - предложить handoff к тренеру
+      if (chatType === AGENT_ROLES.DIETITIAN && trainingScore > 0.3) {
+        console.log(`[router] Dietitian received training question, suggesting handoff to TRAINER (trainingScore: ${trainingScore})`);
         return {
           selected_roles: [AGENT_ROLES.DIETITIAN],
           mode: 'handoff',
           require_user_confirmation: true,
-          reason: 'Признаки эмоциональных проблем с едой',
+          reason: 'Вопрос про тренировки в чате нутрициолога',
+          safety_flags: safetyFlags,
+          handoff_suggested_to: AGENT_ROLES.TRAINER,
+          handoff_mode: 'ask_confirm',
+          confidence: trainingScore,
+        };
+      }
+
+      // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
+      if (chatType !== AGENT_ROLES.DIETITIAN) {
+        return {
+          selected_roles: [chatType],
+          mode: 'handoff',
+          require_user_confirmation: true,
+          reason: 'Вопрос про питание в чате другого специалиста',
           safety_flags: [],
-          handoff_suggested_to: AGENT_ROLES.PSYCHOLOGIST,
+          handoff_suggested_to: AGENT_ROLES.DIETITIAN,
           handoff_mode: 'ask_confirm',
           confidence: nutritionScore,
         };
       }
-    }
 
-      // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
-      if (chatType !== AGENT_ROLES.DIETITIAN) {
       return {
-        selected_roles: [chatType],
-        mode: 'handoff',
-        require_user_confirmation: true,
-        reason: 'Вопрос про питание в чате другого специалиста',
+        selected_roles: roles,
+        mode: 'single',
+        require_user_confirmation: false,
+        reason: 'Вопрос про питание, калории, БЖУ',
         safety_flags: [],
-        handoff_suggested_to: AGENT_ROLES.DIETITIAN,
-        handoff_mode: 'ask_confirm',
+        handoff_suggested_to: null,
+        handoff_mode: null,
         confidence: nutritionScore,
       };
     }
 
-    return {
-      selected_roles: roles,
-      mode: 'single',
-      require_user_confirmation: false,
-      reason: 'Вопрос про питание, калории, БЖУ',
-      safety_flags: [],
-      handoff_suggested_to: null,
-      handoff_mode: null,
-      confidence: nutritionScore,
-    };
-    }
-
     // Правило D: Психология/мотивация (для не-COORDINATOR чатов)
     if (psychologyScore > 0.4) {
-      // Если внутри вопроса есть тренировочный контекст, предложить handoff к тренеру
-      if (trainingScore > 0.2 && chatType === AGENT_ROLES.PSYCHOLOGIST) {
-      return {
-        selected_roles: [AGENT_ROLES.PSYCHOLOGIST],
-        mode: 'handoff',
-        require_user_confirmation: true,
-        reason: 'Вопрос про мотивацию с тренировочным контекстом',
-        safety_flags: [],
-        handoff_suggested_to: AGENT_ROLES.TRAINER,
-        handoff_mode: 'ask_confirm',
-        confidence: psychologyScore,
-      };
-    }
+      // Если ментал-коуч получает вопрос про тренировки или питание - предложить handoff
+      if (chatType === AGENT_ROLES.PSYCHOLOGIST) {
+        if (trainingScore > 0.3) {
+          console.log(`[router] Psychologist received training question, suggesting handoff to TRAINER (trainingScore: ${trainingScore})`);
+          return {
+            selected_roles: [AGENT_ROLES.PSYCHOLOGIST],
+            mode: 'handoff',
+            require_user_confirmation: true,
+            reason: 'Вопрос про тренировки в чате Ментал-Коуч',
+            safety_flags: [],
+            handoff_suggested_to: AGENT_ROLES.TRAINER,
+            handoff_mode: 'ask_confirm',
+            confidence: trainingScore,
+          };
+        }
+        if (nutritionScore > 0.3) {
+          console.log(`[router] Psychologist received nutrition question, suggesting handoff to DIETITIAN (nutritionScore: ${nutritionScore})`);
+          return {
+            selected_roles: [AGENT_ROLES.PSYCHOLOGIST],
+            mode: 'handoff',
+            require_user_confirmation: true,
+            reason: 'Вопрос про питание в чате Ментал-Коуч',
+            safety_flags: [],
+            handoff_suggested_to: AGENT_ROLES.DIETITIAN,
+            handoff_mode: 'ask_confirm',
+            confidence: nutritionScore,
+          };
+        }
+      }
 
       // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
       if (chatType !== AGENT_ROLES.PSYCHOLOGIST) {
+        return {
+          selected_roles: [chatType],
+          mode: 'handoff',
+          require_user_confirmation: true,
+          reason: 'Вопрос про мотивацию/стресс в чате другого специалиста',
+          safety_flags: [],
+          handoff_suggested_to: AGENT_ROLES.PSYCHOLOGIST,
+          handoff_mode: 'ask_confirm',
+          confidence: psychologyScore,
+        };
+      }
+
       return {
-        selected_roles: [chatType],
-        mode: 'handoff',
-        require_user_confirmation: true,
-        reason: 'Вопрос про мотивацию/стресс в чате другого специалиста',
+        selected_roles: [AGENT_ROLES.PSYCHOLOGIST],
+        mode: 'single',
+        require_user_confirmation: false,
+        reason: 'Вопрос про мотивацию, стресс, дисциплину',
         safety_flags: [],
-        handoff_suggested_to: AGENT_ROLES.PSYCHOLOGIST,
-        handoff_mode: 'ask_confirm',
+        handoff_suggested_to: null,
+        handoff_mode: null,
         confidence: psychologyScore,
       };
-    }
-
-    return {
-      selected_roles: [AGENT_ROLES.PSYCHOLOGIST],
-      mode: 'single',
-      require_user_confirmation: false,
-      reason: 'Вопрос про мотивацию, стресс, дисциплину',
-      safety_flags: [],
-      handoff_suggested_to: null,
-      handoff_mode: null,
-      confidence: psychologyScore,
-    };
     }
   }
 
