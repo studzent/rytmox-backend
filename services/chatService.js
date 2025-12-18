@@ -834,6 +834,7 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
     }
 
     let assistantText = completion.choices[0].message.content;
+    let messageType = "response"; // По умолчанию обычное сообщение
 
     // Шаг 7: Обработка seamless handoff (handoff_question уже обработан выше)
     if (routingResult.handoff_mode === "seamless" && routingResult.selected_roles[0] !== mode) {
