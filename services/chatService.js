@@ -526,11 +526,13 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
     }
 
     // Шаг 4: Маршрутизация через router
+    console.log(`[chatService] Calling router with mode=${mode}, text="${text.substring(0, 50)}"`);
     const routingResult = chatRouterService.routeMessage(text, mode, null, threadMetadata);
     console.log(`[chatService] Routing result:`, {
       selected_roles: routingResult.selected_roles,
       mode: routingResult.mode,
       handoff_suggested_to: routingResult.handoff_suggested_to,
+      handoff_mode: routingResult.handoff_mode,
       safety_flags: routingResult.safety_flags,
     });
 
@@ -567,6 +569,65 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
         .from("chat_threads")
         .update({ metadata: { ...threadMetadata, pending_handoff: null } })
         .eq("id", resolvedThreadId);
+    }
+
+    // Проверка handoff ДО вызова OpenAI
+    if (routingResult.mode === 'handoff' && routingResult.handoff_suggested_to && routingResult.handoff_mode === 'ask_confirm') {
+      // Не вызываем OpenAI, сразу возвращаем handoff_question
+      const currentSpeaker = actualMode;
+      const handoffPhrase = getHandoffPhrase(currentSpeaker, routingResult.handoff_suggested_to, routingResult.reason);
+      
+      console.log(`[chatService] Handoff question triggered: ${currentSpeaker} -> ${routingResult.handoff_suggested_to}`);
+      
+      // Сохраняем pending_handoff в thread metadata
+      await supabaseAdmin
+        .from("chat_threads")
+        .update({
+          metadata: {
+            ...threadMetadata,
+            pending_handoff: {
+              to: routingResult.handoff_suggested_to,
+              from: currentSpeaker,
+              reason: routingResult.reason,
+            },
+          },
+        })
+        .eq("id", resolvedThreadId);
+
+      // Сохраняем handoff_question сообщение
+      const { data: savedMessage } = await saveAssistantMessage(resolvedThreadId, userId, handoffPhrase, {
+        message_type: "handoff_question",
+        agent_role: currentSpeaker,
+        agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[currentSpeaker] || currentSpeaker,
+        handoff_suggested_to: routingResult.handoff_suggested_to,
+        handoff_mode: "ask_confirm",
+        routing_reason: routingResult.reason,
+      });
+
+      return {
+        data: {
+          threadId: resolvedThreadId,
+          assistantMessage: {
+            id: savedMessage?.id || `handoff-q-${Date.now()}`,
+            content: handoffPhrase,
+            metadata: {
+              message_type: "handoff_question",
+              agent_role: currentSpeaker,
+              agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[currentSpeaker] || currentSpeaker,
+              handoff_suggested_to: routingResult.handoff_suggested_to,
+              handoff_mode: "ask_confirm",
+            },
+            created_at: savedMessage?.created_at || new Date().toISOString(),
+          },
+          routing: routingResult,
+          ui_hints: {
+            show_typing_as: `${chatRouterService.AGENT_DISPLAY_NAMES[currentSpeaker]} печатает...`,
+            active_agent_badge: currentSpeaker,
+            active_agent_name: chatRouterService.AGENT_DISPLAY_NAMES[currentSpeaker],
+          },
+        },
+        error: null,
+      };
     }
 
     // Определяем speaker на основе routing
@@ -705,6 +766,11 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
         reason: routingResult.reason,
       };
 
+      // Формируем список "печатает..." для каждого специалиста
+      const typingIndicators = routingResult.selected_roles.map(role => 
+        `${chatRouterService.AGENT_DISPLAY_NAMES[role]} печатает...`
+      ).join(', ');
+
       return {
         data: {
           threadId: resolvedThreadId,
@@ -713,7 +779,7 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
           workout: null,
           routing: routing,
           ui_hints: {
-            show_typing_as: `${assistantMessages.length} специалиста отвечают...`,
+            show_typing_as: typingIndicators,
             active_agent_badge: routingResult.selected_roles[0],
             active_agent_name: chatRouterService.AGENT_DISPLAY_NAMES[routingResult.selected_roles[0]],
           },
@@ -769,33 +835,8 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
 
     let assistantText = completion.choices[0].message.content;
 
-    // Шаг 7: Обработка handoff предложения
-    let handoffMessage = null;
-    let finalAssistantText = assistantText;
-    let messageType = "response";
-
-    if (routingResult.handoff_suggested_to && routingResult.handoff_mode === "ask_confirm") {
-      // Предлагаем handoff с подтверждением
-      const handoffPhrase = getHandoffPhrase(speaker, routingResult.handoff_suggested_to, routingResult.reason);
-      finalAssistantText = `${assistantText}\n\n${handoffPhrase}`;
-      handoffMessage = handoffPhrase;
-      messageType = "handoff_question";
-
-      // Сохраняем pending_handoff в thread metadata
-      await supabaseAdmin
-        .from("chat_threads")
-        .update({
-          metadata: {
-            ...threadMetadata,
-            pending_handoff: {
-              to: routingResult.handoff_suggested_to,
-              from: speaker,
-              reason: routingResult.reason,
-            },
-          },
-        })
-        .eq("id", resolvedThreadId);
-    } else if (routingResult.handoff_mode === "seamless" && routingResult.selected_roles[0] !== mode) {
+    // Шаг 7: Обработка seamless handoff (handoff_question уже обработан выше)
+    if (routingResult.handoff_mode === "seamless" && routingResult.selected_roles[0] !== mode) {
       // Seamless handoff - добавляем системное сообщение
       const handoffTo = routingResult.selected_roles[0];
       const handoffNotice = `Подключился ${chatRouterService.AGENT_DISPLAY_NAMES[handoffTo]}`;

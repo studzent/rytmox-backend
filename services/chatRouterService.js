@@ -342,6 +342,7 @@ function detectHandoffRejection(text) {
 function routeMessage(text, chatType, currentRole = null, threadMetadata = null) {
   const lowerText = text.toLowerCase();
   const safetyFlags = detectSafetyFlags(text);
+  console.log(`[router] routeMessage called: chatType=${chatType}, currentRole=${currentRole}, text="${text.substring(0, 100)}"`);
 
   // Проверка на подтверждение/отказ handoff
   if (threadMetadata?.pending_handoff) {
@@ -411,9 +412,11 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
 
   // Правило B: Тренировки
   const trainingScore = detectTrainingIntent(text);
+  console.log(`[router] chatType: ${chatType}, trainingScore: ${trainingScore}, text: "${text.substring(0, 50)}"`);
   if (trainingScore > 0.4) {
     // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
     if (chatType !== AGENT_ROLES.COORDINATOR && chatType !== AGENT_ROLES.TRAINER) {
+      console.log(`[router] Handoff triggered: ${chatType} -> TRAINER (trainingScore: ${trainingScore})`);
       return {
         selected_roles: [chatType],
         mode: 'handoff',
@@ -563,6 +566,7 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
     // Проверка комбинированных вопросов (тренировки + питание)
     if (trainingScore > 0.3 && nutritionScore > 0.3) {
       // Оба вопроса одновременно - multi-response
+      console.log(`[router] Multi-response triggered: TRAINER + DIETITIAN (trainingScore: ${trainingScore}, nutritionScore: ${nutritionScore})`);
       return {
         selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.DIETITIAN],
         mode: 'multi',
@@ -577,6 +581,7 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
 
     // Проверка тренировки + психология
     if (trainingScore > 0.3 && psychologyScore > 0.3) {
+      console.log(`[router] Multi-response triggered: TRAINER + PSYCHOLOGIST (trainingScore: ${trainingScore}, psychologyScore: ${psychologyScore})`);
       return {
         selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.PSYCHOLOGIST],
         mode: 'multi',
