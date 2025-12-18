@@ -13,7 +13,8 @@ const cors = require("cors");
 
 const app = express();
 
-app.use(express.json());
+// Увеличиваем лимит для JSON body до 50MB для поддержки больших запросов (например, транскрибация аудио)
+app.use(express.json({ limit: '50mb' }));
 app.use(cors());
 
 // ROUTES

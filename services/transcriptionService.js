@@ -43,13 +43,17 @@ async function transcribeAudio(audioFilePath, language = 'ru') {
     const audioFile = fs.createReadStream(audioFilePath);
     const filename = path.basename(audioFilePath);
 
-    // Вызываем OpenAI Whisper API с увеличенным таймаутом для долгих аудио
+    // Вызываем OpenAI Whisper API с оптимизированными настройками для лучшего качества
     // Whisper API может обрабатывать до 25MB файлы, что примерно 25 минут аудио
     const transcription = await openai.audio.transcriptions.create({
       file: audioFile,
       model: "whisper-1",
-      language: language,
+      language: language || 'ru', // Явно указываем язык для лучшей точности
       response_format: "text",
+      // Параметры для улучшения качества транскрибации:
+      temperature: 0, // 0 = более детерминированный и точный результат
+      // prompt: можно добавить контекстные подсказки для улучшения распознавания специфических терминов
+      // Но для общего использования оставляем без prompt
     }, {
       timeout: 300000, // 5 минут таймаут для долгих аудио
     });

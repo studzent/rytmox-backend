@@ -9,7 +9,10 @@ router.get("/thread/:threadId", authOptional, chatController.getThread);
 router.post("/handoff/accept", authOptional, chatController.acceptHandoff);
 router.post("/handoff/cancel", authOptional, chatController.cancelHandoff);
 // Для транскрибации нужен увеличенный лимит размера body (до 50MB для base64 аудио)
-router.post("/transcribe", express.json({ limit: '50mb' }), authOptional, chatController.transcribeAudio);
+// Важно: этот middleware должен применяться ДО глобального express.json()
+// Используем отдельный JSON parser с увеличенным лимитом
+const transcribeJsonParser = express.json({ limit: '50mb' });
+router.post("/transcribe", transcribeJsonParser, authOptional, chatController.transcribeAudio);
 
 module.exports = router;
 

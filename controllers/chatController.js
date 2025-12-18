@@ -217,6 +217,13 @@ exports.cancelHandoff = async (req, res) => {
  */
 exports.transcribeAudio = async (req, res) => {
   try {
+    // Логируем размер запроса для диагностики
+    const contentLength = req.get('content-length');
+    if (contentLength) {
+      const sizeMB = parseInt(contentLength) / (1024 * 1024);
+      console.log(`[transcribeAudio] Request size: ${sizeMB.toFixed(2)} MB`);
+    }
+    
     const userIdFromToken = req.user?.id;
     const userIdFromBody = req.body.userId;
     const userId = userIdFromToken || userIdFromBody || null;
@@ -228,6 +235,11 @@ exports.transcribeAudio = async (req, res) => {
     }
 
     const { audioBase64, mimeType, language } = req.body;
+    
+    if (audioBase64) {
+      const base64SizeMB = (audioBase64.length * 3) / 4 / (1024 * 1024);
+      console.log(`[transcribeAudio] Base64 audio size: ${base64SizeMB.toFixed(2)} MB`);
+    }
 
     if (!audioBase64) {
       return res.status(400).json({
