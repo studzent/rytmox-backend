@@ -904,7 +904,7 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
     const { data: assistantMessage, error: assistantMsgError } = await saveAssistantMessage(
       resolvedThreadId,
       userId,
-      finalAssistantText,
+      assistantText,
       metadata
     );
 
@@ -979,7 +979,7 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
         threadId: resolvedThreadId,
         assistantMessage: {
           id: assistantMessage.id || `msg-${Date.now()}`,
-          content: assistantMessage.content || finalAssistantText,
+          content: assistantMessage.content || assistantText,
           metadata: assistantMessage.metadata || metadata,
           created_at: assistantMessage.created_at || new Date().toISOString(),
         },
