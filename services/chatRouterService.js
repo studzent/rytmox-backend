@@ -107,10 +107,16 @@ function detectTrainingIntent(text) {
   const trainingKeywords = [
     'тренировка',
     'тренировки',
+    'тренировок',
+    'тренировку',
+    'тренировке',
     'упражнение',
     'упражнения',
+    'упражнений',
     'план тренировок',
     'программа тренировок',
+    'вариант тренировок',
+    'вариант тренировки',
     'техника',
     'как делать',
     'как выполнять',
@@ -133,6 +139,9 @@ function detectTrainingIntent(text) {
     'становая',
     'подтягивания',
     'отжимания',
+    'нагрузка',
+    'нагрузки',
+    'нагрузок',
   ];
 
   const matches = trainingKeywords.filter((kw) => lowerText.includes(kw)).length;
@@ -152,9 +161,14 @@ function detectNutritionIntent(text) {
 
   const nutritionKeywords = [
     'питание',
+    'питания',
+    'питанию',
     'еда',
+    'еды',
+    'еду',
     'калории',
     'калорий',
+    'калориях',
     'макросы',
     'бжу',
     'белок',
@@ -162,7 +176,14 @@ function detectNutritionIntent(text) {
     'углеводы',
     'жиры',
     'диета',
+    'диеты',
+    'диету',
+    'диете',
+    'вариант диеты',
+    'вариант питания',
     'рацион',
+    'рациона',
+    'рациону',
     'план питания',
     'дефицит',
     'профицит',
@@ -410,12 +431,19 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
     }
   }
 
-  // Правило B: Тренировки
+  // Вычисляем все scores заранее для всех чатов
   const trainingScore = detectTrainingIntent(text);
-  console.log(`[router] chatType: ${chatType}, trainingScore: ${trainingScore}, text: "${text.substring(0, 50)}"`);
-  if (trainingScore > 0.4) {
-    // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
-    if (chatType !== AGENT_ROLES.COORDINATOR && chatType !== AGENT_ROLES.TRAINER) {
+  const nutritionScore = detectNutritionIntent(text);
+  const psychologyScore = detectPsychologyIntent(text);
+  console.log(`[router] chatType: ${chatType}, trainingScore: ${trainingScore}, nutritionScore: ${nutritionScore}, psychologyScore: ${psychologyScore}, text: "${text.substring(0, 50)}"`);
+
+  // Для COORDINATOR сначала проверяем multi-response в правиле E, пропускаем правила B, C, D
+  // Для остальных чатов - применяем правила B, C, D
+  if (chatType !== AGENT_ROLES.COORDINATOR) {
+    // Правило B: Тренировки (для не-COORDINATOR чатов)
+    if (trainingScore > 0.4) {
+      // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
+      if (chatType !== AGENT_ROLES.TRAINER) {
       console.log(`[router] Handoff triggered: ${chatType} -> TRAINER (trainingScore: ${trainingScore})`);
       return {
         selected_roles: [chatType],
@@ -439,29 +467,16 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
       handoff_mode: null,
       confidence: trainingScore,
     };
-  }
+    }
 
-  // Правило C: Питание
-  const nutritionScore = detectNutritionIntent(text);
-  if (nutritionScore > 0.4) {
-    const hasEDSigns = detectEatingDisorderSigns(text);
-    const roles = [AGENT_ROLES.DIETITIAN];
+    // Правило C: Питание (для не-COORDINATOR чатов)
+    if (nutritionScore > 0.4) {
+      const hasEDSigns = detectEatingDisorderSigns(text);
+      const roles = [AGENT_ROLES.DIETITIAN];
 
-    // Если есть признаки РПП/эмоциональных проблем, добавить PSYCHOLOGIST
-    if (hasEDSigns) {
-      if (chatType === AGENT_ROLES.COORDINATOR) {
-        roles.push(AGENT_ROLES.PSYCHOLOGIST);
-        return {
-          selected_roles: roles,
-          mode: 'multi',
-          require_user_confirmation: false,
-          reason: 'Вопрос про питание с признаками эмоциональных проблем',
-          safety_flags: [],
-          handoff_suggested_to: null,
-          handoff_mode: null,
-          confidence: nutritionScore,
-        };
-      } else if (chatType === AGENT_ROLES.DIETITIAN) {
+      // Если есть признаки РПП/эмоциональных проблем, предложить handoff к психологу
+      if (hasEDSigns) {
+        if (chatType === AGENT_ROLES.DIETITIAN) {
         // В 1:1 с диетологом предложить handoff к психологу
         return {
           selected_roles: [AGENT_ROLES.DIETITIAN],
@@ -476,8 +491,8 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
       }
     }
 
-    // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
-    if (chatType !== AGENT_ROLES.COORDINATOR && chatType !== AGENT_ROLES.DIETITIAN) {
+      // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
+      if (chatType !== AGENT_ROLES.DIETITIAN) {
       return {
         selected_roles: [chatType],
         mode: 'handoff',
@@ -500,13 +515,12 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
       handoff_mode: null,
       confidence: nutritionScore,
     };
-  }
+    }
 
-  // Правило D: Психология/мотивация
-  const psychologyScore = detectPsychologyIntent(text);
-  if (psychologyScore > 0.4) {
-    // Если внутри вопроса есть тренировочный контекст, предложить handoff к тренеру
-    if (trainingScore > 0.2 && chatType === AGENT_ROLES.PSYCHOLOGIST) {
+    // Правило D: Психология/мотивация (для не-COORDINATOR чатов)
+    if (psychologyScore > 0.4) {
+      // Если внутри вопроса есть тренировочный контекст, предложить handoff к тренеру
+      if (trainingScore > 0.2 && chatType === AGENT_ROLES.PSYCHOLOGIST) {
       return {
         selected_roles: [AGENT_ROLES.PSYCHOLOGIST],
         mode: 'handoff',
@@ -519,8 +533,8 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
       };
     }
 
-    // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
-    if (chatType !== AGENT_ROLES.COORDINATOR && chatType !== AGENT_ROLES.PSYCHOLOGIST) {
+      // Если пользователь в 1:1 чате с другим специалистом, предложить handoff
+      if (chatType !== AGENT_ROLES.PSYCHOLOGIST) {
       return {
         selected_roles: [chatType],
         mode: 'handoff',
@@ -543,9 +557,10 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
       handoff_mode: null,
       confidence: psychologyScore,
     };
+    }
   }
 
-  // Правило E: Team Chat (COORDINATOR)
+  // Правило E: Team Chat (COORDINATOR) - проверяем multi-response ПЕРЕД single
   if (chatType === AGENT_ROLES.COORDINATOR) {
     // Координатор анализирует и решает сам или подключает специалиста
     // Если уверенность низкая по всем категориям, координатор отвечает сам
@@ -581,21 +596,6 @@ function routeMessage(text, chatType, currentRole = null, threadMetadata = null)
     // Проверка комбинированных вопросов (тренировки + питание)
     if (trainingScore > 0.3 && nutritionScore > 0.3) {
       // Оба вопроса одновременно - multi-response
-      console.log(`[router] Multi-response triggered: TRAINER + DIETITIAN (trainingScore: ${trainingScore}, nutritionScore: ${nutritionScore})`);
-      return {
-        selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.DIETITIAN],
-        mode: 'multi',
-        require_user_confirmation: false,
-        reason: 'Вопрос про тренировки и питание одновременно',
-        safety_flags: safetyFlags,
-        handoff_suggested_to: null,
-        handoff_mode: null,
-        confidence: Math.max(trainingScore, nutritionScore),
-      };
-    }
-
-    // Проверка тренировки + питание
-    if (trainingScore > 0.3 && nutritionScore > 0.3) {
       console.log(`[router] Multi-response triggered: TRAINER + DIETITIAN (trainingScore: ${trainingScore}, nutritionScore: ${nutritionScore})`);
       return {
         selected_roles: [AGENT_ROLES.TRAINER, AGENT_ROLES.DIETITIAN],
