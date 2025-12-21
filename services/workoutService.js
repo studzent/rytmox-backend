@@ -277,6 +277,156 @@ async function getWorkoutsByUser(userId) {
 }
 
 /**
+ * Получение истории тренировок пользователя с полными данными об упражнениях
+ * @param {string} userId - UUID пользователя
+ * @param {object} [options] - Опции
+ * @param {number} [options.limit] - Лимит тренировок (по умолчанию без лимита)
+ * @returns {Promise<{data: array|null, error: object|null}>}
+ */
+async function getWorkoutHistory(userId, options = {}) {
+  try {
+    if (!userId) {
+      return {
+        data: null,
+        error: {
+          message: "userId is required",
+          code: "VALIDATION_ERROR",
+        },
+      };
+    }
+
+    const { limit } = options;
+
+    // 1. Получаем все тренировки пользователя, отсортированные по дате завершения или дате (новые сверху)
+    let query = supabaseAdmin
+      .from("workouts")
+      .select("id, name, date, notes, completed_at, created_at")
+      .eq("user_id", userId)
+      .order("completed_at", { ascending: false, nullsLast: true })
+      .order("date", { ascending: false });
+
+    if (limit) {
+      query = query.limit(limit);
+    }
+
+    const { data: workouts, error: workoutsError } = await query;
+
+    if (workoutsError) {
+      return {
+        data: null,
+        error: {
+          message: `Failed to load workouts: ${workoutsError.message}`,
+          code: "DATABASE_ERROR",
+        },
+      };
+    }
+
+    if (!workouts || workouts.length === 0) {
+      return {
+        data: [],
+        error: null,
+      };
+    }
+
+    // 2. Для каждой тренировки получаем упражнения
+    const historyItems = await Promise.all(
+      workouts.map(async (workout) => {
+        // Получаем упражнения тренировки
+        const { data: workoutExercises, error: exercisesError } = await supabaseAdmin
+          .from("workout_exercises")
+          .select("exercise_id, sets, reps, weight, rest_seconds, order_index")
+          .eq("workout_id", workout.id)
+          .order("order_index", { ascending: true });
+
+        if (exercisesError) {
+          console.warn(`Failed to load exercises for workout ${workout.id}:`, exercisesError);
+          return null;
+        }
+
+        // Получаем детали упражнений
+        const exercises = await Promise.all(
+          (workoutExercises || []).map(async (we) => {
+            const { data: exercise, error: exerciseError } = await supabaseAdmin
+              .from("exercises")
+              .select("id, slug, name_en, name_ru, main_muscle")
+              .eq("id", we.exercise_id)
+              .single();
+
+            if (exerciseError || !exercise) {
+              return null;
+            }
+
+            return {
+              id: exercise.id,
+              slug: exercise.slug,
+              name: exercise.name_ru || exercise.name_en,
+              main_muscle: exercise.main_muscle,
+              sets: we.sets || 0,
+              reps: we.reps || 0,
+              weight: we.weight ? parseFloat(we.weight) : null,
+              rest_seconds: we.rest_seconds || 0,
+              order_index: we.order_index || 0,
+            };
+          })
+        );
+
+        // Фильтруем null (упражнения, которые не найдены)
+        const validExercises = exercises.filter((ex) => ex !== null);
+
+        // Преобразуем даты в ISO строки
+        let dateISO = workout.date;
+        if (typeof workout.date === "string" && workout.date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          dateISO = workout.date;
+        } else if (workout.date instanceof Date) {
+          dateISO = workout.date.toISOString().split("T")[0];
+        }
+
+        let completedAtISO = null;
+        if (workout.completed_at) {
+          if (workout.completed_at instanceof Date) {
+            completedAtISO = workout.completed_at.toISOString();
+          } else if (typeof workout.completed_at === "string") {
+            completedAtISO = workout.completed_at;
+          }
+        } else if (workout.created_at) {
+          // Fallback на created_at, если completed_at не установлен
+          if (workout.created_at instanceof Date) {
+            completedAtISO = workout.created_at.toISOString();
+          } else if (typeof workout.created_at === "string") {
+            completedAtISO = workout.created_at;
+          }
+        }
+
+        return {
+          id: workout.id,
+          name: workout.name,
+          date: dateISO,
+          completed_at: completedAtISO,
+          exercises: validExercises,
+        };
+      })
+    );
+
+    // Фильтруем null (тренировки с ошибками загрузки упражнений)
+    const validHistoryItems = historyItems.filter((item) => item !== null);
+
+    return {
+      data: validHistoryItems,
+      error: null,
+    };
+  } catch (err) {
+    console.error("Error in getWorkoutHistory:", err);
+    return {
+      data: null,
+      error: {
+        message: err.message || "Internal server error",
+        code: "INTERNAL_ERROR",
+      },
+    };
+  }
+}
+
+/**
  * Получение истории тренировок пользователя в компактном формате для AI-контекста
  * @param {string} userId - UUID пользователя
  * @param {object} [options] - Опции
@@ -469,6 +619,7 @@ module.exports = {
   getWorkoutById,
   getWorkoutByIdAI,
   getWorkoutsByUser,
+  getWorkoutHistory,
   getUserWorkoutSessions,
   getTodayWorkout,
 };

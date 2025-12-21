@@ -39,6 +39,22 @@ exports.getProfile = async (req, res) => {
       restrictions: data.restrictions || {},
       training_environment: data.training_environment || null,
       equipment_items: data.equipment_items || [],
+      // Поля онбординга
+      coach_style: data.coach_style || null,
+      date_of_birth: data.date_of_birth || null,
+      goals: data.goals || null,
+      special_programs: data.special_programs || null,
+      training_days_per_week: data.training_days_per_week || null,
+      name: data.name || null,
+      gender: data.gender || null,
+      contraindications: data.contraindications || null,
+      notifications_enabled: data.notifications_enabled || null,
+      nutrition_enabled: data.nutrition_enabled || null,
+      current_step: data.current_step || null,
+      weight_kg: data.weight_kg || null,
+      height_cm: data.height_cm || null,
+      body_focus_zones: data.body_focus_zones || null,
+      emphasized_muscles: data.emphasized_muscles || null,
     };
 
     return res.status(200).json(response);
@@ -133,6 +149,22 @@ exports.updateProfile = async (req, res) => {
       restrictions: hydrated.restrictions || {},
       training_environment: hydrated.training_environment || null,
       equipment_items: hydrated.equipment_items || [],
+      // Поля онбординга
+      coach_style: hydrated.coach_style || null,
+      date_of_birth: hydrated.date_of_birth || null,
+      goals: hydrated.goals || null,
+      special_programs: hydrated.special_programs || null,
+      training_days_per_week: hydrated.training_days_per_week || null,
+      name: hydrated.name || null,
+      gender: hydrated.gender || null,
+      contraindications: hydrated.contraindications || null,
+      notifications_enabled: hydrated.notifications_enabled || null,
+      nutrition_enabled: hydrated.nutrition_enabled || null,
+      current_step: hydrated.current_step || null,
+      weight_kg: hydrated.weight_kg || null,
+      height_cm: hydrated.height_cm || null,
+      body_focus_zones: hydrated.body_focus_zones || null,
+      emphasized_muscles: hydrated.emphasized_muscles || null,
     };
 
     return res.status(200).json(response);

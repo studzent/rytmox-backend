@@ -35,11 +35,14 @@ CREATE TABLE IF NOT EXISTS workouts (
     name TEXT NOT NULL,
     date DATE NOT NULL,
     notes TEXT,
+    completed_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Индекс для быстрого поиска тренировок по пользователю
 CREATE INDEX IF NOT EXISTS workouts_user_id_idx ON workouts(user_id);
+-- Индекс для поиска тренировок по времени завершения
+CREATE INDEX IF NOT EXISTS workouts_completed_at_idx ON workouts(completed_at);
 
 -- Таблица связей тренировок и упражнений
 CREATE TABLE IF NOT EXISTS workout_exercises (

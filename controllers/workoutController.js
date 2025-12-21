@@ -89,3 +89,36 @@ exports.getTodayWorkout = async (req, res) => {
   }
 };
 
+/**
+ * GET /workouts/history/:userId
+ * Получение истории тренировок пользователя с деталями упражнений
+ */
+exports.getWorkoutHistory = async (req, res) => {
+  try {
+    // Извлечение userId: приоритет у токена, затем params
+    const userIdFromToken = req.user?.id;
+    const userIdFromParams = req.params.userId;
+    const userId = userIdFromToken || userIdFromParams;
+
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    // Опциональные параметры запроса
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
+
+    const { data, error } = await workoutService.getWorkoutHistory(userId, { limit });
+
+    if (error) {
+      console.error("Error getting workout history:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    // Возвращаем пустой массив, если тренировок нет
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error("Unexpected error in getWorkoutHistory controller:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
