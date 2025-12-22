@@ -216,7 +216,7 @@ exports.createEntry = async (req, res) => {
           protein: protein ? parseFloat(protein) : null,
           fat: fat ? parseFloat(fat) : null,
           weight_grams: weight_grams ? parseInt(weight_grams) : null,
-          ingredients: ingredients ? String(ingredients).trim() : null,
+          ingredients: ingredients ? (Array.isArray(ingredients) ? ingredients : JSON.parse(ingredients)) : null,
           image_url: image_url ? String(image_url).trim() : null,
         },
       ])
@@ -301,7 +301,21 @@ exports.getEntries = async (req, res) => {
       }
 
       console.log("[getEntries] Success, found", data?.length || 0, "entries");
-      return res.status(200).json(data || []);
+      
+      // Supabase автоматически парсит JSONB, но убеждаемся что ingredients - это массив
+      const processedData = (data || []).map(entry => {
+        if (entry.ingredients && typeof entry.ingredients === 'string') {
+          try {
+            entry.ingredients = JSON.parse(entry.ingredients);
+          } catch (e) {
+            // Если не JSON, оставляем как есть или конвертируем в массив
+            entry.ingredients = null;
+          }
+        }
+        return entry;
+      });
+      
+      return res.status(200).json(processedData);
     } catch (queryError) {
       console.error("[getEntries] Query execution error:", queryError);
       console.error("[getEntries] Query error stack:", queryError.stack);
@@ -587,7 +601,11 @@ exports.updateEntry = async (req, res) => {
     if (protein !== undefined) updateData.protein = protein ? parseFloat(protein) : null;
     if (fat !== undefined) updateData.fat = fat ? parseFloat(fat) : null;
     if (weight_grams !== undefined) updateData.weight_grams = weight_grams ? parseInt(weight_grams) : null;
-    if (ingredients !== undefined) updateData.ingredients = ingredients ? String(ingredients).trim() : null;
+    if (ingredients !== undefined) {
+      updateData.ingredients = ingredients 
+        ? (Array.isArray(ingredients) ? ingredients : (typeof ingredients === 'string' ? JSON.parse(ingredients) : ingredients))
+        : null;
+    }
 
     if (Object.keys(updateData).length === 0) {
       return res.status(400).json({

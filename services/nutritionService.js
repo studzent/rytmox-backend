@@ -271,11 +271,13 @@ async function analyzeFoodFromText(text) {
    - Если получается нереалистичное значение - пересчитай
 
 7. ИНГРЕДИЕНТЫ (КРИТИЧЕСКИ ВАЖНО):
-   - Для СЛОЖНЫХ БЛЮД (английский завтрак, салат цезарь, паста карбонара, борщ и т.д.) - ОБЯЗАТЕЛЬНО перечисли ВСЕ основные ингредиенты через запятую
-   - Пример: "Английский завтрак" → ingredients: "Яйца, Бекон, Сосиски, Фасоль в томатном соусе, Грибы, Помидоры, Тосты"
-   - Пример: "Салат Цезарь" → ingredients: "Салат романо, Куриная грудка, Пармезан, Сухарики, Соус цезарь"
-   - Для ПРОСТЫХ ПРОДУКТОВ (банан, яблоко, курица) - можно оставить пустым или указать только название продукта
-   - Формат: строка с ингредиентами через запятую (без пробелов после запятой или с пробелами - на твое усмотрение)
+   - Для СЛОЖНЫХ БЛЮД (английский завтрак, салат цезарь, паста карбонара, борщ и т.д.) - ОБЯЗАТЕЛЬНО перечисли ВСЕ основные ингредиенты как массив объектов
+   - Каждый ингредиент должен содержать: name (название с большой буквы), calories (калории этого ингредиента), grams (граммы), carbs, protein, fat (опционально)
+   - Пример: "Английский завтрак" → ingredients: [{"name": "Яйца", "calories": 160, "grams": 100, "carbs": 1.1, "protein": 13, "fat": 11}, {"name": "Бекон", "calories": 150, "grams": 50, "carbs": 0.5, "protein": 10, "fat": 12}]
+   - Пример: "Салат Цезарь" → ingredients: [{"name": "Салат романо", "calories": 20, "grams": 50, "carbs": 2, "protein": 1, "fat": 0}, {"name": "Куриная грудка", "calories": 165, "grams": 100, "carbs": 0, "protein": 31, "fat": 3.6}]
+   - Для ПРОСТЫХ ПРОДУКТОВ (банан, яблоко, курица) - можно вернуть массив с одним элементом или пустой массив
+   - Сумма калорий всех ингредиентов должна примерно совпадать с общими калориями блюда
+   - Сумма граммов всех ингредиентов должна примерно совпадать с общим весом порции
 
 8. ФОРМАТ ОТВЕТА:
    - calories: целое число (минимум 0, максимум 5000 для одной порции)
@@ -306,7 +308,10 @@ async function analyzeFoodFromText(text) {
   "protein": число (г, с учётом размера порции),
   "fat": число (г, с учётом размера порции),
   "serving_size": "примерный размер порции в граммах или стандартных единицах",
-  "ingredients": "список ингредиентов через запятую (для сложных блюд - обязательно, для простых продуктов - опционально)"
+  "ingredients": [
+    {"name": "Название ингредиента с большой буквы", "calories": число, "grams": число, "carbs": число (опционально), "protein": число (опционально), "fat": число (опционально)},
+    ...
+  ]
 }
 
 Описание еды: "${text.trim()}"
@@ -339,7 +344,7 @@ async function analyzeFoodFromText(text) {
 6. Учитывай все добавки (масло, сахар, соусы)
 7. Исправляй опечатки в названиях
 8. Валидируй разумность значений
-9. Для СЛОЖНЫХ БЛЮД (состоящих из нескольких ингредиентов) - ОБЯЗАТЕЛЬНО перечисли все основные ингредиенты в поле "ingredients" через запятую
+9. Для СЛОЖНЫХ БЛЮД (состоящих из нескольких ингредиентов) - ОБЯЗАТЕЛЬНО перечисли все основные ингредиенты как массив объектов с name, calories, grams, carbs, protein, fat
 
 Возвращай ТОЛЬКО валидный JSON без дополнительного текста.`,
         },
@@ -468,6 +473,44 @@ async function analyzeFoodFromText(text) {
       calories = 5000;
     }
     
+    // Валидация и нормализация ингредиентов
+    let ingredients = null;
+    if (parsed.ingredients) {
+      if (Array.isArray(parsed.ingredients)) {
+        // Валидируем каждый ингредиент
+        ingredients = parsed.ingredients
+          .filter(ing => ing && ing.name && typeof ing.name === 'string')
+          .map(ing => ({
+            name: ing.name.trim().charAt(0).toUpperCase() + ing.name.trim().slice(1).toLowerCase(),
+            calories: Math.max(0, Math.round(ing.calories || 0)),
+            grams: Math.max(0, Math.round(ing.grams || 0)),
+            carbs: ing.carbs !== undefined ? Math.max(0, parseFloat(ing.carbs)) : undefined,
+            protein: ing.protein !== undefined ? Math.max(0, parseFloat(ing.protein)) : undefined,
+            fat: ing.fat !== undefined ? Math.max(0, parseFloat(ing.fat)) : undefined,
+          }));
+        if (ingredients.length === 0) {
+          ingredients = null;
+        }
+      } else if (typeof parsed.ingredients === 'string') {
+        // Обратная совместимость: если AI вернул строку, конвертируем в массив объектов
+        const ingredientNames = parsed.ingredients.split(',').map(s => s.trim()).filter(Boolean);
+        if (ingredientNames.length > 0) {
+          // Распределяем калории и граммы пропорционально
+          const totalCalories = calories;
+          const servingSize = parsed.serving_size ? parseInt(parsed.serving_size) || 100 : 100;
+          const totalGrams = servingSize;
+          const caloriesPerIngredient = Math.round(totalCalories / ingredientNames.length);
+          const gramsPerIngredient = Math.round(totalGrams / ingredientNames.length);
+          
+          ingredients = ingredientNames.map(name => ({
+            name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase(),
+            calories: caloriesPerIngredient,
+            grams: gramsPerIngredient,
+          }));
+        }
+      }
+    }
+    
     const result = {
       title: parsed.title || text.trim(),
       calories: calories,
@@ -475,7 +518,7 @@ async function analyzeFoodFromText(text) {
       protein: parsed.protein ? Math.max(0, parseFloat(parsed.protein)) : null,
       fat: parsed.fat ? Math.max(0, parseFloat(parsed.fat)) : null,
       serving_size: parsed.serving_size || null,
-      ingredients: parsed.ingredients || null,
+      ingredients: ingredients,
     };
 
     return {
@@ -525,7 +568,7 @@ async function analyzeFoodFromImage(imageBase64) {
    - Средняя порция = стандартные калории
    - Маленькая порция = стандартные калории × 0.5-0.7
 5. Валидируй разумность значений
-6. ИНГРЕДИЕНТЫ: Для СЛОЖНЫХ БЛЮД (состоящих из нескольких компонентов) - ОБЯЗАТЕЛЬНО перечисли все видимые основные ингредиенты через запятую. Для простых продуктов - опционально.
+6. ИНГРЕДИЕНТЫ: Для СЛОЖНЫХ БЛЮД (состоящих из нескольких компонентов) - ОБЯЗАТЕЛЬНО перечисли все видимые основные ингредиенты как массив объектов. Каждый ингредиент должен содержать: name (название с большой буквы), calories (калории этого ингредиента), grams (граммы), carbs, protein, fat (опционально). Сумма калорий и граммов всех ингредиентов должна примерно совпадать с общими значениями блюда. Для простых продуктов - можно вернуть массив с одним элементом или пустой массив.
 
 Верни ТОЛЬКО валидный JSON без дополнительного текста:
 
@@ -536,7 +579,10 @@ async function analyzeFoodFromImage(imageBase64) {
   "protein": число (г, с учётом размера порции),
   "fat": число (г, с учётом размера порции),
   "serving_size": "примерный размер порции в граммах или стандартных единицах",
-  "ingredients": "список ингредиентов через запятую (для сложных блюд - обязательно, для простых продуктов - опционально)"
+  "ingredients": [
+    {"name": "Название ингредиента с большой буквы", "calories": число, "grams": число, "carbs": число (опционально), "protein": число (опционально), "fat": число (опционально)},
+    ...
+  ]
 }`;
 
     const startTime = Date.now();
@@ -556,7 +602,7 @@ async function analyzeFoodFromImage(imageBase64) {
 2. Определи способ приготовления (жареное = +20-30% калорий)
 3. Учти все видимые добавки (масло, соусы, сыр, орехи)
 4. Валидируй разумность значений
-5. Для СЛОЖНЫХ БЛЮД (состоящих из нескольких компонентов) - ОБЯЗАТЕЛЬНО перечисли все видимые основные ингредиенты в поле "ingredients" через запятую
+5. Для СЛОЖНЫХ БЛЮД (состоящих из нескольких компонентов) - ОБЯЗАТЕЛЬНО перечисли все видимые основные ингредиенты как массив объектов с name, calories, grams, carbs, protein, fat
 
 Возвращай ТОЛЬКО валидный JSON без дополнительного текста.`,
           },
@@ -669,6 +715,43 @@ async function analyzeFoodFromImage(imageBase64) {
       calories = 5000;
     }
     
+    // Валидация и нормализация ингредиентов
+    let ingredients = null;
+    if (parsed.ingredients) {
+      if (Array.isArray(parsed.ingredients)) {
+        // Валидируем каждый ингредиент
+        ingredients = parsed.ingredients
+          .filter(ing => ing && ing.name && typeof ing.name === 'string')
+          .map(ing => ({
+            name: ing.name.trim().charAt(0).toUpperCase() + ing.name.trim().slice(1).toLowerCase(),
+            calories: Math.max(0, Math.round(ing.calories || 0)),
+            grams: Math.max(0, Math.round(ing.grams || 0)),
+            carbs: ing.carbs !== undefined ? Math.max(0, parseFloat(ing.carbs)) : undefined,
+            protein: ing.protein !== undefined ? Math.max(0, parseFloat(ing.protein)) : undefined,
+            fat: ing.fat !== undefined ? Math.max(0, parseFloat(ing.fat)) : undefined,
+          }));
+        if (ingredients.length === 0) {
+          ingredients = null;
+        }
+      } else if (typeof parsed.ingredients === 'string') {
+        // Обратная совместимость: если AI вернул строку, конвертируем в массив объектов
+        const ingredientNames = parsed.ingredients.split(',').map(s => s.trim()).filter(Boolean);
+        if (ingredientNames.length > 0) {
+          // Распределяем калории и граммы пропорционально
+          const totalCalories = calories;
+          const totalGrams = parsed.serving_size ? parseInt(parsed.serving_size) || 100 : 100;
+          const caloriesPerIngredient = Math.round(totalCalories / ingredientNames.length);
+          const gramsPerIngredient = Math.round(totalGrams / ingredientNames.length);
+          
+          ingredients = ingredientNames.map(name => ({
+            name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase(),
+            calories: caloriesPerIngredient,
+            grams: gramsPerIngredient,
+          }));
+        }
+      }
+    }
+    
     const result = {
       title: parsed.title || "Неизвестное блюдо",
       calories: calories,
@@ -676,7 +759,7 @@ async function analyzeFoodFromImage(imageBase64) {
       protein: parsed.protein ? Math.max(0, parseFloat(parsed.protein)) : null,
       fat: parsed.fat ? Math.max(0, parseFloat(parsed.fat)) : null,
       serving_size: parsed.serving_size || null,
-      ingredients: parsed.ingredients || null,
+      ingredients: ingredients,
     };
 
     return {
