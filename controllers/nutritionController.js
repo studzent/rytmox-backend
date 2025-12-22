@@ -281,7 +281,7 @@ exports.getEntries = async (req, res) => {
         .select("*")
         .eq("user_id", userId)
         .eq("date", date)
-        .order("created_at", { ascending: true });
+        .order("created_at", { ascending: false });
 
       if (error) {
         console.error("[getEntries] Supabase error:", error);
