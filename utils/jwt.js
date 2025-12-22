@@ -38,9 +38,19 @@ function verifyToken(token) {
 
   try {
     const decoded = jwt.verify(token, secret);
+    
+    // Защита от неожиданной структуры токена
+    if (!decoded || typeof decoded !== 'object') {
+      throw new Error("Invalid token structure");
+    }
+    
+    if (!decoded.userId) {
+      throw new Error("Token missing userId");
+    }
+    
     return {
       userId: decoded.userId,
-      authType: decoded.authType,
+      authType: decoded.authType || null,
     };
   } catch (err) {
     if (err.name === "TokenExpiredError") {

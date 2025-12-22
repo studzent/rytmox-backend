@@ -8,7 +8,7 @@ const { supabaseAdmin } = require("../utils/supabaseClient");
 exports.analyzeText = async (req, res) => {
   try {
     const userIdFromToken = req.user?.id;
-    const userIdFromBody = req.body.userId;
+    const userIdFromBody = req.body?.userId;
     const userId = userIdFromToken || userIdFromBody || null;
 
     const { text } = req.body;
@@ -23,7 +23,20 @@ exports.analyzeText = async (req, res) => {
 
     if (error) {
       console.error("Error analyzing food from text:", error);
-      const statusCode = error.code === "VALIDATION_ERROR" ? 400 : 500;
+      console.error("Error code:", error.code);
+      console.error("Error message:", error.message);
+      
+      // Определяем правильный статус код
+      let statusCode = 500;
+      const errorCode = error.code?.toUpperCase();
+      if (errorCode === "VALIDATION_ERROR") {
+        statusCode = 400;
+      } else if (errorCode === "NOT_FOOD" || errorCode === "INVALID_TITLE") {
+        statusCode = 400; // Bad request - не еда
+      }
+      // PARSE_ERROR и AI_ERROR остаются 500 (серверные ошибки)
+      
+      console.log(`[analyzeText] Returning status ${statusCode} for error code: ${error.code}`);
       return res.status(statusCode).json({ error: error.message });
     }
 
@@ -41,7 +54,7 @@ exports.analyzeText = async (req, res) => {
 exports.analyzeImage = async (req, res) => {
   try {
     const userIdFromToken = req.user?.id;
-    const userIdFromBody = req.body.userId;
+    const userIdFromBody = req.body?.userId;
     const userId = userIdFromToken || userIdFromBody || null;
 
     const { imageBase64 } = req.body;
@@ -74,7 +87,7 @@ exports.analyzeImage = async (req, res) => {
 exports.createEntry = async (req, res) => {
   try {
     const userIdFromToken = req.user?.id;
-    const userIdFromBody = req.body.userId;
+    const userIdFromBody = req.body?.userId;
     const userId = userIdFromToken || userIdFromBody;
 
     console.log("[createEntry] Request received:", {
@@ -152,8 +165,8 @@ exports.createEntry = async (req, res) => {
 exports.getEntries = async (req, res) => {
   try {
     const userIdFromToken = req.user?.id;
-    const userIdFromBody = req.body.userId;
-    const userIdFromQuery = req.query.userId;
+    const userIdFromBody = req.body?.userId;
+    const userIdFromQuery = req.query?.userId;
     const userId = userIdFromToken || userIdFromBody || userIdFromQuery;
 
     console.log("[getEntries] Request received:", {
@@ -237,8 +250,8 @@ exports.getEntries = async (req, res) => {
 exports.getFavorites = async (req, res) => {
   try {
     const userIdFromToken = req.user?.id;
-    const userIdFromBody = req.body.userId;
-    const userIdFromQuery = req.query.userId;
+    const userIdFromBody = req.body?.userId;
+    const userIdFromQuery = req.query?.userId;
     const userId = userIdFromToken || userIdFromBody || userIdFromQuery;
 
     console.log("[getFavorites] Request received:", {
@@ -257,24 +270,49 @@ exports.getFavorites = async (req, res) => {
 
     console.log("[getFavorites] Querying favorite_meals for userId:", userId);
     
-    const { data, error } = await supabaseAdmin
-      .from("favorite_meals")
-      .select("*")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+    try {
+      const { data, error } = await supabaseAdmin
+        .from("favorite_meals")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
 
-    if (error) {
-      console.error("[getFavorites] Supabase error:", error);
-      console.error("[getFavorites] Error details:", JSON.stringify(error, null, 2));
-      return res.status(500).json({ error: error.message || "Database error" });
+      if (error) {
+        console.error("[getFavorites] Supabase error:", error);
+        console.error("[getFavorites] Error code:", error.code);
+        console.error("[getFavorites] Error message:", error.message);
+        console.error("[getFavorites] Error details:", JSON.stringify(error, null, 2));
+        
+        // Проверка на отсутствие таблицы
+        if (error.message && error.message.includes("relation") && error.message.includes("does not exist")) {
+          return res.status(500).json({ 
+            error: "Table 'favorite_meals' not found. Please apply migrations and wait 30 seconds for schema cache to update.",
+            code: "TABLE_NOT_FOUND"
+          });
+        }
+        
+        return res.status(500).json({ error: error.message || "Database error" });
+      }
+
+      console.log("[getFavorites] Success, found", data?.length || 0, "favorites");
+      return res.status(200).json(data || []);
+    } catch (queryError) {
+      console.error("[getFavorites] Query execution error:", queryError);
+      console.error("[getFavorites] Query error stack:", queryError.stack);
+      throw queryError; // Пробросим дальше для обработки в catch блоке
     }
-
-    console.log("[getFavorites] Success, found", data?.length || 0, "favorites");
-    return res.status(200).json(data || []);
   } catch (err) {
     console.error("[getFavorites] Unexpected error:", err);
+    console.error("[getFavorites] Error name:", err.name);
+    console.error("[getFavorites] Error message:", err.message);
     console.error("[getFavorites] Error stack:", err.stack);
-    return res.status(500).json({ error: "Internal server error" });
+    
+    // Более детальное сообщение об ошибке
+    const errorMessage = err.message || "Internal server error";
+    return res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 };
 
@@ -285,7 +323,7 @@ exports.getFavorites = async (req, res) => {
 exports.createFavorite = async (req, res) => {
   try {
     const userIdFromToken = req.user?.id;
-    const userIdFromBody = req.body.userId;
+    const userIdFromBody = req.body?.userId;
     const userId = userIdFromToken || userIdFromBody;
 
     console.log("[createFavorite] Request received:", {
@@ -350,8 +388,8 @@ exports.createFavorite = async (req, res) => {
 exports.deleteFavorite = async (req, res) => {
   try {
     const userIdFromToken = req.user?.id;
-    const userIdFromBody = req.body.userId;
-    const userIdFromQuery = req.query.userId;
+    const userIdFromBody = req.body?.userId;
+    const userIdFromQuery = req.query?.userId;
     const userId = userIdFromToken || userIdFromBody || userIdFromQuery;
 
     if (!userId) {

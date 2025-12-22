@@ -24,12 +24,25 @@ function authRequired(req, res, next) {
 
   try {
     const payload = verifyToken(token);
+    
+    // Защита от неожиданных значений
+    if (!payload || typeof payload !== 'object') {
+      console.error("[authRequired] verifyToken returned invalid payload:", payload);
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    if (!payload.userId) {
+      console.error("[authRequired] payload missing userId:", payload);
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
     req.user = {
       id: payload.userId,
       authType: payload.authType,
     };
     next();
   } catch (err) {
+    console.error("[authRequired] Token verification error:", err.message);
     return res.status(401).json({ error: "Unauthorized" });
   }
 }
@@ -61,6 +74,18 @@ function authOptional(req, res, next) {
 
   try {
     const payload = verifyToken(token);
+    
+    // Защита от неожиданных значений
+    if (!payload || typeof payload !== 'object') {
+      console.error("[authOptional] verifyToken returned invalid payload:", payload);
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
+    if (!payload.userId) {
+      console.error("[authOptional] payload missing userId:", payload);
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    
     req.user = {
       id: payload.userId,
       authType: payload.authType,
@@ -68,6 +93,7 @@ function authOptional(req, res, next) {
     next();
   } catch (err) {
     // Токен невалиден - возвращаем 401 (более безопасный вариант)
+    console.error("[authOptional] Token verification error:", err.message);
     return res.status(401).json({ error: "Unauthorized" });
   }
 }
