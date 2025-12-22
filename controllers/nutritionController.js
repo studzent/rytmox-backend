@@ -77,7 +77,15 @@ exports.createEntry = async (req, res) => {
     const userIdFromBody = req.body.userId;
     const userId = userIdFromToken || userIdFromBody;
 
+    console.log("[createEntry] Request received:", {
+      userIdFromToken: !!userIdFromToken,
+      userIdFromBody: !!userIdFromBody,
+      userId: userId,
+      bodyKeys: Object.keys(req.body),
+    });
+
     if (!userId) {
+      console.error("[createEntry] userId is missing");
       return res.status(400).json({
         error: "userId is required",
       });
@@ -87,6 +95,7 @@ exports.createEntry = async (req, res) => {
 
     // Валидация
     if (!date || !meal_type || !title || calories === undefined) {
+      console.error("[createEntry] Missing required fields:", { date: !!date, meal_type: !!meal_type, title: !!title, calories: calories !== undefined });
       return res.status(400).json({
         error: "date, meal_type, title, and calories are required",
       });
@@ -94,11 +103,14 @@ exports.createEntry = async (req, res) => {
 
     const validMealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
     if (!validMealTypes.includes(meal_type)) {
+      console.error("[createEntry] Invalid meal_type:", meal_type);
       return res.status(400).json({
         error: `meal_type must be one of: ${validMealTypes.join(', ')}`,
       });
     }
 
+    console.log("[createEntry] Inserting entry:", { userId, date, meal_type, title, calories });
+    
     const { data, error } = await supabaseAdmin
       .from("nutrition_entries")
       .insert([
@@ -117,13 +129,16 @@ exports.createEntry = async (req, res) => {
       .single();
 
     if (error) {
-      console.error("Error creating nutrition entry:", error);
-      return res.status(500).json({ error: error.message });
+      console.error("[createEntry] Supabase error:", error);
+      console.error("[createEntry] Error details:", JSON.stringify(error, null, 2));
+      return res.status(500).json({ error: error.message || "Database error" });
     }
 
+    console.log("[createEntry] Success, created entry:", data?.id);
     return res.status(201).json(data);
   } catch (err) {
-    console.error("Unexpected error in createEntry controller:", err);
+    console.error("[createEntry] Unexpected error:", err);
+    console.error("[createEntry] Error stack:", err.stack);
     return res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -139,7 +154,16 @@ exports.getEntries = async (req, res) => {
     const userIdFromQuery = req.query.userId;
     const userId = userIdFromToken || userIdFromBody || userIdFromQuery;
 
+    console.log("[getEntries] Request received:", {
+      userIdFromToken: !!userIdFromToken,
+      userIdFromBody: !!userIdFromBody,
+      userIdFromQuery: !!userIdFromQuery,
+      userId: userId,
+      date: req.params.date,
+    });
+
     if (!userId) {
+      console.error("[getEntries] userId is missing");
       return res.status(400).json({
         error: "userId is required",
       });
@@ -148,11 +172,14 @@ exports.getEntries = async (req, res) => {
     const { date } = req.params;
 
     if (!date) {
+      console.error("[getEntries] date is missing");
       return res.status(400).json({
         error: "date is required",
       });
     }
 
+    console.log("[getEntries] Querying nutrition_entries for userId:", userId, "date:", date);
+    
     const { data, error } = await supabaseAdmin
       .from("nutrition_entries")
       .select("*")
@@ -161,13 +188,16 @@ exports.getEntries = async (req, res) => {
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error("Error fetching nutrition entries:", error);
-      return res.status(500).json({ error: error.message });
+      console.error("[getEntries] Supabase error:", error);
+      console.error("[getEntries] Error details:", JSON.stringify(error, null, 2));
+      return res.status(500).json({ error: error.message || "Database error" });
     }
 
+    console.log("[getEntries] Success, found", data?.length || 0, "entries");
     return res.status(200).json(data || []);
   } catch (err) {
-    console.error("Unexpected error in getEntries controller:", err);
+    console.error("[getEntries] Unexpected error:", err);
+    console.error("[getEntries] Error stack:", err.stack);
     return res.status(500).json({ error: "Internal server error" });
   }
 };
