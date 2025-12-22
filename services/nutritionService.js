@@ -448,8 +448,8 @@ async function analyzeFoodFromText(text) {
       };
     }
     
-    // Валидация и нормализация данных
-    let calories = Math.round(parsed.calories || 0);
+    // Валидация и нормализация данных (без округления - округление только при сохранении в БД)
+    let calories = parseFloat(parsed.calories || 0);
     
     // Проверка на невалидные названия
     const invalidTitles = ['название блюда', 'название', 'блюдо', 'неизвестное блюдо', 'unknown'];
@@ -477,13 +477,13 @@ async function analyzeFoodFromText(text) {
     let ingredients = null;
     if (parsed.ingredients) {
       if (Array.isArray(parsed.ingredients)) {
-        // Валидируем каждый ингредиент
+        // Валидируем каждый ингредиент (без округления - округление только при сохранении в БД)
         ingredients = parsed.ingredients
           .filter(ing => ing && ing.name && typeof ing.name === 'string')
           .map(ing => ({
             name: ing.name.trim().charAt(0).toUpperCase() + ing.name.trim().slice(1).toLowerCase(),
-            calories: Math.max(0, Math.round(ing.calories || 0)),
-            grams: Math.max(0, Math.round(ing.grams || 0)),
+            calories: Math.max(0, parseFloat(ing.calories || 0)),
+            grams: Math.max(0, parseFloat(ing.grams || 0)),
             carbs: ing.carbs !== undefined ? Math.max(0, parseFloat(ing.carbs)) : undefined,
             protein: ing.protein !== undefined ? Math.max(0, parseFloat(ing.protein)) : undefined,
             fat: ing.fat !== undefined ? Math.max(0, parseFloat(ing.fat)) : undefined,
@@ -495,12 +495,12 @@ async function analyzeFoodFromText(text) {
         // Обратная совместимость: если AI вернул строку, конвертируем в массив объектов
         const ingredientNames = parsed.ingredients.split(',').map(s => s.trim()).filter(Boolean);
         if (ingredientNames.length > 0) {
-          // Распределяем калории и граммы пропорционально
+          // Распределяем калории и граммы пропорционально (без округления)
           const totalCalories = calories;
           const servingSize = parsed.serving_size ? parseInt(parsed.serving_size) || 100 : 100;
           const totalGrams = servingSize;
-          const caloriesPerIngredient = Math.round(totalCalories / ingredientNames.length);
-          const gramsPerIngredient = Math.round(totalGrams / ingredientNames.length);
+          const caloriesPerIngredient = totalCalories / ingredientNames.length;
+          const gramsPerIngredient = totalGrams / ingredientNames.length;
           
           ingredients = ingredientNames.map(name => ({
             name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase(),
@@ -595,11 +595,20 @@ async function analyzeFoodFromImage(imageBase64) {
    - Проверь разумность значений (овсянка не может быть 1000 ккал, стейк не может быть 50 ккал)
    - Если получается нереалистичное значение - пересчитай
 
-7. ИНГРЕДИЕНТЫ:
+7. РАСПОЗНАВАНИЕ МЕЛКИХ ДЕТАЛЕЙ:
+   - Внимательно рассмотри ВСЕ детали на фото, включая мелкие ингредиенты
+   - Распознавай травы и специи: укроп, петрушка, базилик, кинза, зеленый лук, чеснок, перец, паприка и т.д.
+   - Распознавай гарниры и добавки: рис, картофель, овощи, грибы, орехи, семечки
+   - Даже если ингредиент мелкий или в небольшом количестве - обязательно включи его в список ингредиентов
+   - Каждый видимый ингредиент должен быть учтен в расчете калорий и БЖУ
+
+8. ИНГРЕДИЕНТЫ (КРИТИЧЕСКИ ВАЖНО):
    - Для СЛОЖНЫХ БЛЮД (паста, салаты, комплексные обеды) - ОБЯЗАТЕЛЬНО перечисли ВСЕ видимые основные ингредиенты как массив объектов
-   - Каждый ингредиент: name (название с большой буквы), calories (калории этого ингредиента), grams (граммы), carbs, protein, fat (опционально)
+   - ОБЯЗАТЕЛЬНО заполняй calories, grams, carbs, protein, fat для КАЖДОГО ингредиента
+   - Если не можешь определить точно калории/граммы для конкретного ингредиента - распредели пропорционально от общих значений блюда
+   - Каждый ингредиент должен содержать: name (название с большой буквы), calories (калории этого ингредиента), grams (граммы), carbs (углеводы), protein (белки), fat (жиры)
    - Сумма калорий и граммов всех ингредиентов должна примерно совпадать с общими значениями блюда
-   - Для простых продуктов (яблоко, банан) - можно вернуть массив с одним элементом
+   - Для простых продуктов (яблоко, банан) - можно вернуть массив с одним элементом, но также с полными данными
 
 ПРИМЕРЫ ПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ:
 - Фото тарелки с макаронами, соусом и сыром → "Паста карбонара" с ингредиентами: макароны, бекон, яйца, пармезан, сливки
@@ -607,17 +616,24 @@ async function analyzeFoodFromImage(imageBase64) {
 - Фото омлета на сковороде → "Омлет" с ингредиентами: яйца, масло
 - Фото яблока → "Яблоко" с одним ингредиентом: яблоко
 
+9. ОПИСАНИЕ (description):
+   - Добавь текстовое описание того, что ты видишь на фото
+   - Опиши все видимые ингредиенты, способ приготовления, размер порции
+   - Упомяни все мелкие детали (травы, специи, гарниры)
+   - Это описание поможет пользователю понять, что AI увидел и проанализировал
+
 Верни ТОЛЬКО валидный JSON без дополнительного текста:
 
 {
   "title": "название блюда",
+  "description": "подробное описание того, что видно на фото: ингредиенты, способ приготовления, размер порции, все детали",
   "calories": число (рассчитано с учётом размера порции на фото),
   "carbs": число (г, с учётом размера порции),
   "protein": число (г, с учётом размера порции),
   "fat": число (г, с учётом размера порции),
   "serving_size": "примерный размер порции в граммах или стандартных единицах",
   "ingredients": [
-    {"name": "Название ингредиента с большой буквы", "calories": число, "grams": число, "carbs": число (опционально), "protein": число (опционально), "fat": число (опционально)},
+    {"name": "Название ингредиента с большой буквы", "calories": число (ОБЯЗАТЕЛЬНО), "grams": число (ОБЯЗАТЕЛЬНО), "carbs": число, "protein": число, "fat": число},
     ...
   ]
 }`;
@@ -636,15 +652,18 @@ async function analyzeFoodFromImage(imageBase64) {
 1. КОНКРЕТНОЕ название блюда (не общие слова типа "еда", а точное: "паста карбонара", "салат цезарь", "омлет")
 2. Калорийность с учётом размера порции, способа приготовления и всех видимых добавок
 3. БЖУ (белки, жиры, углеводы)
-4. Все видимые ингредиенты для сложных блюд
+4. Все видимые ингредиенты для сложных блюд, включая мелкие детали (травы, специи, гарниры)
+5. Подробное описание того, что видно на фото
 
 КРИТИЧЕСКИ ВАЖНО:
-- Внимательно рассмотри ВСЕ детали на фото: тарелку, столовые приборы, фон, другие объекты
+- Внимательно рассмотри ВСЕ детали на фото: тарелку, столовые приборы, фон, другие объекты, МЕЛКИЕ ИНГРЕДИЕНТЫ (укроп, петрушка, специи)
 - Определи РАЗМЕР порции, сравнив с объектами на фото
 - Определи СПОСОБ ПРИГОТОВЛЕНИЯ (жареное/варёное/сырое/запечённое)
-- Учти ВСЕ видимые добавки (масло, соусы, сыр, орехи, хлеб)
+- Учти ВСЕ видимые добавки (масло, соусы, сыр, орехи, хлеб, травы, специи)
 - Валидируй разумность значений (проверь, что калории реалистичны для данного блюда)
 - Для СЛОЖНЫХ БЛЮД - обязательно перечисли ВСЕ видимые ингредиенты как массив объектов
+- ОБЯЗАТЕЛЬНО заполняй calories, grams, carbs, protein, fat для КАЖДОГО ингредиента
+- Если не можешь определить точно - распредели пропорционально от общих значений блюда
 
 НЕ возвращай общие названия типа "блюдо" или "еда". Всегда определяй КОНКРЕТНОЕ название блюда.
 
@@ -667,7 +686,7 @@ async function analyzeFoodFromImage(imageBase64) {
           },
         ],
         temperature: 0.2,
-        max_tokens: 1000,
+        max_tokens: 1500, // Увеличено для более детального описания и анализа
       });
 
       // Увеличенный таймаут для анализа изображений (90 секунд, так как анализ изображений может занимать больше времени)
@@ -747,8 +766,8 @@ async function analyzeFoodFromImage(imageBase64) {
       };
     }
 
-    // Валидация и нормализация данных
-    let calories = Math.round(parsed.calories || 0);
+    // Валидация и нормализация данных (без округления - округление только при сохранении в БД)
+    let calories = parseFloat(parsed.calories || 0);
     
     // Валидация разумности значений
     if (calories < 0) {
@@ -763,17 +782,31 @@ async function analyzeFoodFromImage(imageBase64) {
     let ingredients = null;
     if (parsed.ingredients) {
       if (Array.isArray(parsed.ingredients)) {
-        // Валидируем каждый ингредиент
+        // Валидируем каждый ингредиент (без округления - округление только при сохранении в БД)
+        // Если у ингредиента нет calories или grams, распределяем пропорционально от общих значений
+        const totalCaloriesForIngredients = calories;
+        const totalGramsForIngredients = parsed.serving_size ? parseFloat(parsed.serving_size) || 100 : 100;
+        
         ingredients = parsed.ingredients
           .filter(ing => ing && ing.name && typeof ing.name === 'string')
-          .map(ing => ({
-            name: ing.name.trim().charAt(0).toUpperCase() + ing.name.trim().slice(1).toLowerCase(),
-            calories: Math.max(0, Math.round(ing.calories || 0)),
-            grams: Math.max(0, Math.round(ing.grams || 0)),
-            carbs: ing.carbs !== undefined ? Math.max(0, parseFloat(ing.carbs)) : undefined,
-            protein: ing.protein !== undefined ? Math.max(0, parseFloat(ing.protein)) : undefined,
-            fat: ing.fat !== undefined ? Math.max(0, parseFloat(ing.fat)) : undefined,
-          }));
+          .map((ing, index, array) => {
+            // Если у ингредиента нет калорий или граммов, распределяем пропорционально
+            let ingCalories = ing.calories !== undefined && ing.calories !== null 
+              ? parseFloat(ing.calories) 
+              : totalCaloriesForIngredients / array.length;
+            let ingGrams = ing.grams !== undefined && ing.grams !== null 
+              ? parseFloat(ing.grams) 
+              : totalGramsForIngredients / array.length;
+            
+            return {
+              name: ing.name.trim().charAt(0).toUpperCase() + ing.name.trim().slice(1).toLowerCase(),
+              calories: Math.max(0, ingCalories),
+              grams: Math.max(0, ingGrams),
+              carbs: ing.carbs !== undefined ? Math.max(0, parseFloat(ing.carbs)) : undefined,
+              protein: ing.protein !== undefined ? Math.max(0, parseFloat(ing.protein)) : undefined,
+              fat: ing.fat !== undefined ? Math.max(0, parseFloat(ing.fat)) : undefined,
+            };
+          });
         if (ingredients.length === 0) {
           ingredients = null;
         }
@@ -781,11 +814,11 @@ async function analyzeFoodFromImage(imageBase64) {
         // Обратная совместимость: если AI вернул строку, конвертируем в массив объектов
         const ingredientNames = parsed.ingredients.split(',').map(s => s.trim()).filter(Boolean);
         if (ingredientNames.length > 0) {
-          // Распределяем калории и граммы пропорционально
+          // Распределяем калории и граммы пропорционально (без округления)
           const totalCalories = calories;
-          const totalGrams = parsed.serving_size ? parseInt(parsed.serving_size) || 100 : 100;
-          const caloriesPerIngredient = Math.round(totalCalories / ingredientNames.length);
-          const gramsPerIngredient = Math.round(totalGrams / ingredientNames.length);
+          const totalGrams = parsed.serving_size ? parseFloat(parsed.serving_size) || 100 : 100;
+          const caloriesPerIngredient = totalCalories / ingredientNames.length;
+          const gramsPerIngredient = totalGrams / ingredientNames.length;
           
           ingredients = ingredientNames.map(name => ({
             name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase(),
@@ -798,6 +831,7 @@ async function analyzeFoodFromImage(imageBase64) {
     
     const result = {
       title: parsed.title || "Неизвестное блюдо",
+      description: parsed.description || null, // Добавляем описание того, что AI увидел
       calories: calories,
       carbs: parsed.carbs ? Math.max(0, parseFloat(parsed.carbs)) : null,
       protein: parsed.protein ? Math.max(0, parseFloat(parsed.protein)) : null,
