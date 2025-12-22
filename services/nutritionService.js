@@ -308,12 +308,16 @@ async function analyzeFoodFromText(text) {
     const isComplex = /\d+\s*(г|кг|мл|л)|большая|маленькая|двойная|полпорции/i.test(text);
     const model = isComplex ? "gpt-4o" : "gpt-4o-mini";
 
-    const response = await openai.chat.completions.create({
-      model: model,
-      messages: [
-        {
-          role: "system",
-          content: `Ты - профессиональный AI-нутрициолог с экспертизой в анализе пищевых продуктов. 
+    const startTime = Date.now();
+    let response;
+    try {
+      // Вызов OpenAI API с таймаутом через Promise.race
+      const apiCall = openai.chat.completions.create({
+        model: model,
+        messages: [
+          {
+            role: "system",
+            content: `Ты - профессиональный AI-нутрициолог с экспертизой в анализе пищевых продуктов.
 
 Твоя задача - точно определить калорийность и БЖУ на основе описания еды.
 
@@ -337,6 +341,50 @@ async function analyzeFoodFromText(text) {
       temperature: 0.3,
       response_format: { type: "json_object" },
     });
+
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("OpenAI API request timeout after 60 seconds"));
+        }, 60000);
+      });
+
+      response = await Promise.race([apiCall, timeoutPromise]);
+
+      const duration = Date.now() - startTime;
+      console.log(`[analyzeFoodFromText] ✅ OpenAI API call successful (${duration}ms)`);
+    } catch (apiError) {
+      console.error(`[analyzeFoodFromText] ❌ OpenAI API error:`, apiError);
+      console.error(`[analyzeFoodFromText] Error message:`, apiError.message);
+      
+      // Обработка различных типов ошибок
+      if (apiError.message && apiError.message.includes("timeout")) {
+        return {
+          data: null,
+          error: {
+            message: "Запрос к AI превысил время ожидания. Попробуйте еще раз.",
+            code: "TIMEOUT_ERROR",
+          },
+        };
+      }
+      
+      if (apiError.message && apiError.message.includes("rate limit")) {
+        return {
+          data: null,
+          error: {
+            message: "Превышен лимит запросов к AI. Попробуйте позже.",
+            code: "RATE_LIMIT_ERROR",
+          },
+        };
+      }
+
+      return {
+        data: null,
+        error: {
+          message: `Ошибка AI: ${apiError.message || "Неизвестная ошибка"}`,
+          code: "AI_ERROR",
+        },
+      };
+    }
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
@@ -478,12 +526,15 @@ async function analyzeFoodFromImage(imageBase64) {
   "serving_size": "примерный размер порции в граммах или стандартных единицах"
 }`;
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content: `Ты - профессиональный AI-нутрициолог с экспертизой в анализе пищевых продуктов по фотографиям.
+    const startTime = Date.now();
+    let response;
+    try {
+      const apiCall = openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: `Ты - профессиональный AI-нутрициолог с экспертизой в анализе пищевых продуктов по фотографиям.
 
 Твоя задача - точно определить калорийность и БЖУ на основе фото еды.
 
@@ -494,26 +545,70 @@ async function analyzeFoodFromImage(imageBase64) {
 4. Валидируй разумность значений
 
 Возвращай ТОЛЬКО валидный JSON без дополнительного текста.`,
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: prompt,
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${base64Data}`,
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: prompt,
               },
-            },
-          ],
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${base64Data}`,
+                },
+              },
+            ],
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 500,
+      });
+
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("OpenAI API request timeout after 60 seconds"));
+        }, 60000);
+      });
+
+      response = await Promise.race([apiCall, timeoutPromise]);
+
+      const duration = Date.now() - startTime;
+      console.log(`[analyzeFoodFromImage] ✅ OpenAI API call successful (${duration}ms)`);
+    } catch (apiError) {
+      console.error(`[analyzeFoodFromImage] ❌ OpenAI API error:`, apiError);
+      console.error(`[analyzeFoodFromImage] Error message:`, apiError.message);
+      
+      // Обработка различных типов ошибок
+      if (apiError.message && apiError.message.includes("timeout")) {
+        return {
+          data: null,
+          error: {
+            message: "Запрос к AI превысил время ожидания. Попробуйте еще раз.",
+            code: "TIMEOUT_ERROR",
+          },
+        };
+      }
+      
+      if (apiError.message && apiError.message.includes("rate limit")) {
+        return {
+          data: null,
+          error: {
+            message: "Превышен лимит запросов к AI. Попробуйте позже.",
+            code: "RATE_LIMIT_ERROR",
+          },
+        };
+      }
+
+      return {
+        data: null,
+        error: {
+          message: `Ошибка AI: ${apiError.message || "Неизвестная ошибка"}`,
+          code: "AI_ERROR",
         },
-      ],
-      temperature: 0.3,
-      max_tokens: 500,
-    });
+      };
+    }
 
     const content = response.choices[0]?.message?.content;
     if (!content) {

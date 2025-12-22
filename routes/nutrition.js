@@ -14,6 +14,8 @@ router.post("/analyze-image", authOptional, nutritionController.analyzeImage);
 // Записи питания
 router.post("/entries", authOptional, nutritionController.createEntry);
 router.get("/entries/:date", authOptional, nutritionController.getEntries);
+router.put("/entries/:id", authOptional, nutritionController.updateEntry);
+router.delete("/entries/:id", authOptional, nutritionController.deleteEntry);
 
 // Избранное
 router.get("/favorites", authOptional, nutritionController.getFavorites);

@@ -33,6 +33,10 @@ exports.analyzeText = async (req, res) => {
         statusCode = 400;
       } else if (errorCode === "NOT_FOOD" || errorCode === "INVALID_TITLE") {
         statusCode = 400; // Bad request - не еда
+      } else if (errorCode === "TIMEOUT_ERROR") {
+        statusCode = 504; // Gateway Timeout
+      } else if (errorCode === "RATE_LIMIT_ERROR") {
+        statusCode = 429; // Too Many Requests
       }
       // PARSE_ERROR и AI_ERROR остаются 500 (серверные ошибки)
       
@@ -69,7 +73,15 @@ exports.analyzeImage = async (req, res) => {
 
     if (error) {
       console.error("Error analyzing food from image:", error);
-      const statusCode = error.code === "VALIDATION_ERROR" ? 400 : 500;
+      let statusCode = 500;
+      const errorCode = error.code?.toUpperCase();
+      if (errorCode === "VALIDATION_ERROR") {
+        statusCode = 400;
+      } else if (errorCode === "TIMEOUT_ERROR") {
+        statusCode = 504; // Gateway Timeout
+      } else if (errorCode === "RATE_LIMIT_ERROR") {
+        statusCode = 429; // Too Many Requests
+      }
       return res.status(statusCode).json({ error: error.message });
     }
 
@@ -439,6 +451,177 @@ exports.deleteFavorite = async (req, res) => {
     return res.status(200).json({ success: true });
   } catch (err) {
     console.error("Unexpected error in deleteFavorite controller:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * PUT /nutrition/entries/:id
+ * Обновление записи питания
+ */
+exports.updateEntry = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromBody = req.body?.userId;
+    const userIdFromQuery = req.query?.userId;
+    const userId = userIdFromToken || userIdFromBody || userIdFromQuery;
+
+    console.log("[updateEntry] Request received:", {
+      userIdFromToken: !!userIdFromToken,
+      userIdFromBody: !!userIdFromBody,
+      userIdFromQuery: !!userIdFromQuery,
+      userId: userId,
+      entryId: req.params.id,
+    });
+
+    if (!userId) {
+      console.error("[updateEntry] userId is missing");
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { id } = req.params;
+
+    if (!id) {
+      console.error("[updateEntry] id is missing");
+      return res.status(400).json({
+        error: "id is required",
+      });
+    }
+
+    // Проверяем, что запись принадлежит пользователю
+    const { data: existingEntry, error: fetchError } = await supabaseAdmin
+      .from("nutrition_entries")
+      .select("user_id")
+      .eq("id", id)
+      .single();
+
+    if (fetchError || !existingEntry) {
+      return res.status(404).json({
+        error: "Nutrition entry not found",
+      });
+    }
+
+    if (existingEntry.user_id !== userId) {
+      return res.status(403).json({
+        error: "Forbidden",
+      });
+    }
+
+    const { title, calories, carbs, protein, fat, weight_grams, ingredients } = req.body;
+
+    // Собираем только те поля, которые были переданы для обновления
+    const updateData = {};
+    if (title !== undefined) updateData.title = String(title).trim();
+    if (calories !== undefined) updateData.calories = Math.round(calories);
+    if (carbs !== undefined) updateData.carbs = carbs ? parseFloat(carbs) : null;
+    if (protein !== undefined) updateData.protein = protein ? parseFloat(protein) : null;
+    if (fat !== undefined) updateData.fat = fat ? parseFloat(fat) : null;
+    if (weight_grams !== undefined) updateData.weight_grams = weight_grams ? parseInt(weight_grams) : null;
+    if (ingredients !== undefined) updateData.ingredients = ingredients ? String(ingredients).trim() : null;
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({
+        error: "No fields to update",
+      });
+    }
+
+    console.log("[updateEntry] Updating entry:", { id, updateData });
+
+    const { data, error } = await supabaseAdmin
+      .from("nutrition_entries")
+      .update(updateData)
+      .eq("id", id)
+      .eq("user_id", userId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[updateEntry] Supabase error:", error);
+      console.error("[updateEntry] Error details:", JSON.stringify(error, null, 2));
+      return res.status(500).json({ error: error.message || "Database error" });
+    }
+
+    console.log("[updateEntry] Success, updated entry:", data?.id);
+    return res.status(200).json(data);
+  } catch (err) {
+    console.error("[updateEntry] Unexpected error:", err);
+    console.error("[updateEntry] Error stack:", err.stack);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * DELETE /nutrition/entries/:id
+ * Удаление записи питания
+ */
+exports.deleteEntry = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromBody = req.body?.userId;
+    const userIdFromQuery = req.query?.userId;
+    const userId = userIdFromToken || userIdFromBody || userIdFromQuery;
+
+    console.log("[deleteEntry] Request received:", {
+      userIdFromToken: !!userIdFromToken,
+      userIdFromBody: !!userIdFromBody,
+      userIdFromQuery: !!userIdFromQuery,
+      userId: userId,
+      entryId: req.params.id,
+    });
+
+    if (!userId) {
+      console.error("[deleteEntry] userId is missing");
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { id } = req.params;
+
+    if (!id) {
+      console.error("[deleteEntry] id is missing");
+      return res.status(400).json({
+        error: "id is required",
+      });
+    }
+
+    // Проверяем, что запись принадлежит пользователю
+    const { data: entry, error: fetchError } = await supabaseAdmin
+      .from("nutrition_entries")
+      .select("user_id")
+      .eq("id", id)
+      .single();
+
+    if (fetchError || !entry) {
+      return res.status(404).json({
+        error: "Nutrition entry not found",
+      });
+    }
+
+    if (entry.user_id !== userId) {
+      return res.status(403).json({
+        error: "Forbidden",
+      });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("nutrition_entries")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", userId);
+
+    if (error) {
+      console.error("[deleteEntry] Error deleting entry:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    console.log("[deleteEntry] Success, deleted entry:", id);
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error("[deleteEntry] Unexpected error:", err);
+    console.error("[deleteEntry] Error stack:", err.stack);
     return res.status(500).json({ error: "Internal server error" });
   }
 };
