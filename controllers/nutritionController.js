@@ -1,7 +1,6 @@
 const nutritionService = require("../services/nutritionService");
 const { supabaseAdmin } = require("../utils/supabaseClient");
 const crypto = require("crypto");
-const crypto = require("crypto");
 
 /**
  * POST /nutrition/analyze-text
@@ -211,7 +210,7 @@ exports.createEntry = async (req, res) => {
           date,
           meal_type,
           title,
-          calories: Math.round(calories),
+          calories: parseFloat(calories), // Сохраняем точное значение без округления
           carbs: carbs ? parseFloat(carbs) : null,
           protein: protein ? parseFloat(protein) : null,
           fat: fat ? parseFloat(fat) : null,
