@@ -28,6 +28,7 @@ const equipmentRoutes = require("./routes/equipment");
 const userMetricsRoutes = require("./routes/userMetrics");
 const locationsRoutes = require("./routes/locations");
 const chatRoutes = require("./routes/chat");
+const nutritionRoutes = require("./routes/nutrition");
 
 app.use("/auth", authRoutes);
 app.use("/ai", aiRoutes);
@@ -39,6 +40,11 @@ app.use("/equipment", equipmentRoutes);
 app.use("/metrics", userMetricsRoutes);
 app.use("/locations", locationsRoutes);
 app.use("/chat", chatRoutes);
+app.use("/nutrition", nutritionRoutes);
+
+// Debug: Log all registered routes
+console.log("Registered routes:");
+console.log("  /nutrition/* - nutrition routes");
 
 // DEFAULT
 app.get("/", (req, res) => {

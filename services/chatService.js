@@ -874,6 +874,20 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
     let assistantText = completion.choices[0].message.content;
     let messageType = "response"; // По умолчанию обычное сообщение
 
+    // Шаг 6.5: Извлечение параметров профиля из сообщения пользователя
+    try {
+      const profileUpdates = await extractProfileUpdates(userId, text);
+      if (profileUpdates && Object.keys(profileUpdates).length > 0) {
+        console.log('[chatService] Extracted profile updates:', profileUpdates);
+        // Обновляем профиль (автоматически пересчитаются калории)
+        await userProfileService.upsertUserProfile(userId, profileUpdates);
+        console.log('[chatService] Profile updated with extracted parameters');
+      }
+    } catch (extractError) {
+      console.warn('[chatService] Failed to extract profile updates:', extractError.message);
+      // Не прерываем выполнение, если извлечение не удалось
+    }
+
     // Шаг 7: Обработка seamless handoff (handoff_question уже обработан выше)
     if (routingResult.handoff_mode === "seamless" && routingResult.selected_roles[0] !== mode) {
       // Seamless handoff - добавляем системное сообщение
@@ -1290,6 +1304,105 @@ async function cancelHandoff(userId, threadId) {
         code: "INTERNAL_ERROR",
       },
     };
+  }
+}
+
+/**
+ * Извлечение параметров профиля из сообщения пользователя через AI
+ * @param {string} userId - ID пользователя
+ * @param {string} messageText - Текст сообщения пользователя
+ * @returns {Promise<object>} Объект с обновлениями профиля
+ */
+async function extractProfileUpdates(userId, messageText) {
+  try {
+    if (!messageText || typeof messageText !== 'string' || messageText.trim().length === 0) {
+      return {};
+    }
+
+    const prompt = `Ты - AI-ассистент в фитнес-приложении. Если пользователь сообщает о своём весе, возрасте, уровне активности или целях, 
+извлеки эти данные из сообщения и верни ТОЛЬКО валидный JSON без дополнительного текста:
+
+{
+  "updates": {
+    "weight_kg": число (если упомянут вес, например "75 кг", "вешу 75"),
+    "date_of_birth": "YYYY-MM-DD" (если упомянут возраст, рассчитай дату рождения на основе текущей даты),
+    "activity_level": "sedentary|light|moderate|high|very_high" (если упомянута активность),
+    "goals": ["weight_loss"|"muscle_gain"|"health"] (если упомянуты цели)
+  }
+}
+
+Если данных нет в сообщении, верни: {"updates": {}}
+
+Маппинг активности:
+- "сидячий", "мало двигаюсь", "сидячая работа" → "sedentary"
+- "лёгкая", "немного активности", "1-3 тренировки" → "light"
+- "умеренная", "средняя", "3-5 тренировок" → "moderate"
+- "высокая", "много активности", "6-7 тренировок" → "high"
+- "очень высокая", "очень много", "2 раза в день" → "very_high"
+
+Маппинг целей:
+- "похудеть", "сбросить вес", "похудение" → ["weight_loss"]
+- "набрать массу", "набрать вес", "набор массы" → ["muscle_gain"]
+- "здоровье", "поддержание" → ["health"]
+
+Сообщение пользователя: "${messageText.trim()}"`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Ты - AI-ассистент. Извлекаешь параметры профиля из сообщений пользователя и возвращаешь только валидный JSON.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.3,
+      response_format: { type: "json_object" },
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      return {};
+    }
+
+    const parsed = JSON.parse(content);
+    const updates = parsed.updates || {};
+
+    // Валидация и нормализация
+    const result = {};
+    
+    if (updates.weight_kg && typeof updates.weight_kg === 'number' && updates.weight_kg > 0 && updates.weight_kg < 500) {
+      result.weight_kg = updates.weight_kg;
+    }
+    
+    if (updates.date_of_birth && typeof updates.date_of_birth === 'string') {
+      // Проверяем формат даты
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (dateRegex.test(updates.date_of_birth)) {
+        result.date_of_birth = updates.date_of_birth;
+      }
+    }
+    
+    const validActivityLevels = ['sedentary', 'light', 'moderate', 'high', 'very_high'];
+    if (updates.activity_level && validActivityLevels.includes(updates.activity_level)) {
+      result.activity_level = updates.activity_level;
+    }
+    
+    if (updates.goals && Array.isArray(updates.goals) && updates.goals.length > 0) {
+      const validGoals = ['weight_loss', 'fat_loss', 'muscle_gain', 'health'];
+      const filteredGoals = updates.goals.filter(g => validGoals.includes(g));
+      if (filteredGoals.length > 0) {
+        result.goals = filteredGoals;
+      }
+    }
+
+    return result;
+  } catch (err) {
+    console.error('[extractProfileUpdates] Error:', err);
+    return {};
   }
 }
 

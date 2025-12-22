@@ -723,6 +723,16 @@ async function upsertUserProfile(userId, payload) {
         };
       }
     }
+    
+    // Обработка activity_level
+    if (payload.activity_level !== undefined) {
+      const validActivityLevels = ['sedentary', 'light', 'moderate', 'high', 'very_high'];
+      if (payload.activity_level && validActivityLevels.includes(payload.activity_level)) {
+        profileData.activity_level = payload.activity_level;
+      } else if (payload.activity_level === null) {
+        profileData.activity_level = null;
+      }
+    }
 
     // Удаляем special_programs и weight_unit из profileData, так как этих колонок не существует
     // special_programs уже сохранены в restrictions.specialPrograms выше
@@ -784,6 +794,57 @@ async function upsertUserProfile(userId, payload) {
     
     console.log(`[upsertUserProfile] User ${userId} ${existingUser ? 'exists' : 'does not exist'}`);
 
+    // Автоматический пересчёт калорий при изменении ключевых параметров
+    if (existingUser) {
+      const nutritionService = require("./nutritionService");
+      
+      // Получаем текущий профиль для сравнения
+      const { data: currentProfile } = await getUserProfile(userId);
+      
+      if (currentProfile) {
+        // Проверяем, изменились ли ключевые поля для расчёта калорий
+        const weightChanged = payload.weight_kg !== undefined && payload.weight_kg !== currentProfile.weight_kg;
+        const heightChanged = payload.height_cm !== undefined && payload.height_cm !== currentProfile.height_cm;
+        const dateOfBirthChanged = payload.date_of_birth !== undefined && payload.date_of_birth !== currentProfile.date_of_birth;
+        const genderChanged = payload.gender !== undefined && payload.gender !== currentProfile.gender;
+        const activityLevelChanged = payload.activity_level !== undefined && payload.activity_level !== currentProfile.activity_level;
+        const goalsChanged = payload.goals !== undefined && JSON.stringify(payload.goals) !== JSON.stringify(currentProfile.goals);
+        
+        const shouldRecalculate = weightChanged || heightChanged || dateOfBirthChanged || genderChanged || activityLevelChanged || goalsChanged;
+        
+        if (shouldRecalculate) {
+          console.log('[upsertUserProfile] Key parameters changed, recalculating calories...');
+          
+          // Подготавливаем данные для пересчёта (используем новые значения из payload или текущие из профиля)
+          const recalculationData = {
+            weight_kg: payload.weight_kg !== undefined ? payload.weight_kg : currentProfile.weight_kg,
+            height_cm: payload.height_cm !== undefined ? payload.height_cm : currentProfile.height_cm,
+            date_of_birth: payload.date_of_birth !== undefined ? payload.date_of_birth : currentProfile.date_of_birth,
+            gender: payload.gender !== undefined ? payload.gender : currentProfile.gender,
+            activity_level: payload.activity_level !== undefined ? payload.activity_level : currentProfile.activity_level,
+            goals: payload.goals !== undefined ? payload.goals : currentProfile.goals,
+          };
+          
+          const { data: calorieData, error: calorieError } = await nutritionService.recalculateCalories(userId, recalculationData);
+          
+          if (calorieError) {
+            console.warn('[upsertUserProfile] Failed to recalculate calories:', calorieError.message);
+            // Не прерываем сохранение профиля, если расчёт калорий не удался
+          } else if (calorieData) {
+            // Добавляем расчётные значения в profileData
+            profileData.bmr = calorieData.bmr;
+            profileData.tdee = calorieData.tdee;
+            profileData.calorie_goal = calorieData.calorie_goal;
+            console.log('[upsertUserProfile] Calories recalculated:', {
+              bmr: calorieData.bmr,
+              tdee: calorieData.tdee,
+              calorie_goal: calorieData.calorie_goal,
+            });
+          }
+        }
+      }
+    }
+
     let result;
     if (existingUser) {
       // Обновляем существующего пользователя
@@ -818,6 +879,37 @@ async function upsertUserProfile(userId, payload) {
         ...newUserData,
         password_hash: '[REDACTED]'
       }, null, 2));
+      // Пересчёт калорий для нового пользователя, если есть все необходимые данные
+      const nutritionService = require("./nutritionService");
+      const hasRequiredData = payload.weight_kg && payload.height_cm && payload.date_of_birth && payload.gender && payload.activity_level;
+      
+      if (hasRequiredData) {
+        console.log('[upsertUserProfile] New user with all required data, calculating calories...');
+        const recalculationData = {
+          weight_kg: payload.weight_kg,
+          height_cm: payload.height_cm,
+          date_of_birth: payload.date_of_birth,
+          gender: payload.gender,
+          activity_level: payload.activity_level,
+          goals: payload.goals,
+        };
+        
+        const { data: calorieData, error: calorieError } = await nutritionService.recalculateCalories(userId, recalculationData);
+        
+        if (calorieError) {
+          console.warn('[upsertUserProfile] Failed to calculate calories for new user:', calorieError.message);
+        } else if (calorieData) {
+          newUserData.bmr = calorieData.bmr;
+          newUserData.tdee = calorieData.tdee;
+          newUserData.calorie_goal = calorieData.calorie_goal;
+          console.log('[upsertUserProfile] Calories calculated for new user:', {
+            bmr: calorieData.bmr,
+            tdee: calorieData.tdee,
+            calorie_goal: calorieData.calorie_goal,
+          });
+        }
+      }
+      
       console.log(`[upsertUserProfile] About to INSERT into users table...`);
       result = await supabaseAdmin
         .from("users")
