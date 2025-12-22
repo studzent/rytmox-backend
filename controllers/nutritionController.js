@@ -91,7 +91,7 @@ exports.createEntry = async (req, res) => {
       });
     }
 
-    const { date, meal_type, title, calories, carbs, protein, fat } = req.body;
+    const { date, meal_type, title, calories, carbs, protein, fat, weight_grams, ingredients } = req.body;
 
     // Валидация
     if (!date || !meal_type || !title || calories === undefined) {
@@ -109,7 +109,7 @@ exports.createEntry = async (req, res) => {
       });
     }
 
-    console.log("[createEntry] Inserting entry:", { userId, date, meal_type, title, calories });
+    console.log("[createEntry] Inserting entry:", { userId, date, meal_type, title, calories, weight_grams, ingredients });
     
     const { data, error } = await supabaseAdmin
       .from("nutrition_entries")
@@ -123,6 +123,8 @@ exports.createEntry = async (req, res) => {
           carbs: carbs ? parseFloat(carbs) : null,
           protein: protein ? parseFloat(protein) : null,
           fat: fat ? parseFloat(fat) : null,
+          weight_grams: weight_grams ? parseInt(weight_grams) : null,
+          ingredients: ingredients ? String(ingredients).trim() : null,
         },
       ])
       .select()
@@ -180,25 +182,51 @@ exports.getEntries = async (req, res) => {
 
     console.log("[getEntries] Querying nutrition_entries for userId:", userId, "date:", date);
     
-    const { data, error } = await supabaseAdmin
-      .from("nutrition_entries")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("date", date)
-      .order("created_at", { ascending: true });
+    try {
+      const { data, error } = await supabaseAdmin
+        .from("nutrition_entries")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("date", date)
+        .order("created_at", { ascending: true });
 
-    if (error) {
-      console.error("[getEntries] Supabase error:", error);
-      console.error("[getEntries] Error details:", JSON.stringify(error, null, 2));
-      return res.status(500).json({ error: error.message || "Database error" });
+      if (error) {
+        console.error("[getEntries] Supabase error:", error);
+        console.error("[getEntries] Error code:", error.code);
+        console.error("[getEntries] Error message:", error.message);
+        console.error("[getEntries] Error details:", JSON.stringify(error, null, 2));
+        
+        // Проверка на отсутствие таблицы
+        if (error.message && error.message.includes("relation") && error.message.includes("does not exist")) {
+          return res.status(500).json({ 
+            error: "Table 'nutrition_entries' not found. Please apply migrations and wait 30 seconds for schema cache to update.",
+            code: "TABLE_NOT_FOUND"
+          });
+        }
+        
+        return res.status(500).json({ error: error.message || "Database error" });
+      }
+
+      console.log("[getEntries] Success, found", data?.length || 0, "entries");
+      return res.status(200).json(data || []);
+    } catch (queryError) {
+      console.error("[getEntries] Query execution error:", queryError);
+      console.error("[getEntries] Query error stack:", queryError.stack);
+      throw queryError; // Пробросим дальше для обработки в catch блоке
     }
 
-    console.log("[getEntries] Success, found", data?.length || 0, "entries");
-    return res.status(200).json(data || []);
   } catch (err) {
     console.error("[getEntries] Unexpected error:", err);
+    console.error("[getEntries] Error name:", err.name);
+    console.error("[getEntries] Error message:", err.message);
     console.error("[getEntries] Error stack:", err.stack);
-    return res.status(500).json({ error: "Internal server error" });
+    
+    // Более детальное сообщение об ошибке
+    const errorMessage = err.message || "Internal server error";
+    return res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 };
 
@@ -213,12 +241,22 @@ exports.getFavorites = async (req, res) => {
     const userIdFromQuery = req.query.userId;
     const userId = userIdFromToken || userIdFromBody || userIdFromQuery;
 
+    console.log("[getFavorites] Request received:", {
+      userIdFromToken: !!userIdFromToken,
+      userIdFromBody: !!userIdFromBody,
+      userIdFromQuery: !!userIdFromQuery,
+      userId: userId,
+    });
+
     if (!userId) {
+      console.error("[getFavorites] userId is missing");
       return res.status(400).json({
         error: "userId is required",
       });
     }
 
+    console.log("[getFavorites] Querying favorite_meals for userId:", userId);
+    
     const { data, error } = await supabaseAdmin
       .from("favorite_meals")
       .select("*")
@@ -226,13 +264,16 @@ exports.getFavorites = async (req, res) => {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("Error fetching favorite meals:", error);
-      return res.status(500).json({ error: error.message });
+      console.error("[getFavorites] Supabase error:", error);
+      console.error("[getFavorites] Error details:", JSON.stringify(error, null, 2));
+      return res.status(500).json({ error: error.message || "Database error" });
     }
 
+    console.log("[getFavorites] Success, found", data?.length || 0, "favorites");
     return res.status(200).json(data || []);
   } catch (err) {
-    console.error("Unexpected error in getFavorites controller:", err);
+    console.error("[getFavorites] Unexpected error:", err);
+    console.error("[getFavorites] Error stack:", err.stack);
     return res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -247,7 +288,15 @@ exports.createFavorite = async (req, res) => {
     const userIdFromBody = req.body.userId;
     const userId = userIdFromToken || userIdFromBody;
 
+    console.log("[createFavorite] Request received:", {
+      userIdFromToken: !!userIdFromToken,
+      userIdFromBody: !!userIdFromBody,
+      userId: userId,
+      bodyKeys: Object.keys(req.body),
+    });
+
     if (!userId) {
+      console.error("[createFavorite] userId is missing");
       return res.status(400).json({
         error: "userId is required",
       });
@@ -256,11 +305,14 @@ exports.createFavorite = async (req, res) => {
     const { title, calories, carbs, protein, fat } = req.body;
 
     if (!title || calories === undefined) {
+      console.error("[createFavorite] Missing required fields:", { title: !!title, calories: calories !== undefined });
       return res.status(400).json({
         error: "title and calories are required",
       });
     }
 
+    console.log("[createFavorite] Inserting favorite:", { userId, title, calories });
+    
     const { data, error } = await supabaseAdmin
       .from("favorite_meals")
       .insert([
@@ -277,13 +329,16 @@ exports.createFavorite = async (req, res) => {
       .single();
 
     if (error) {
-      console.error("Error creating favorite meal:", error);
-      return res.status(500).json({ error: error.message });
+      console.error("[createFavorite] Supabase error:", error);
+      console.error("[createFavorite] Error details:", JSON.stringify(error, null, 2));
+      return res.status(500).json({ error: error.message || "Database error" });
     }
 
+    console.log("[createFavorite] Success, created favorite:", data?.id);
     return res.status(201).json(data);
   } catch (err) {
-    console.error("Unexpected error in createFavorite controller:", err);
+    console.error("[createFavorite] Unexpected error:", err);
+    console.error("[createFavorite] Error stack:", err.stack);
     return res.status(500).json({ error: "Internal server error" });
   }
 };
