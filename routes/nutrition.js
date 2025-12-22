@@ -11,6 +11,9 @@ router.get("/test", (req, res) => {
 router.post("/analyze-text", authOptional, nutritionController.analyzeText);
 router.post("/analyze-image", authOptional, nutritionController.analyzeImage);
 
+// Загрузка изображения
+router.post("/upload-image", authOptional, nutritionController.uploadNutritionImage);
+
 // Записи питания
 router.post("/entries", authOptional, nutritionController.createEntry);
 router.get("/entries/:date", authOptional, nutritionController.getEntries);

@@ -1,5 +1,7 @@
 const nutritionService = require("../services/nutritionService");
 const { supabaseAdmin } = require("../utils/supabaseClient");
+const crypto = require("crypto");
+const crypto = require("crypto");
 
 /**
  * POST /nutrition/analyze-text
@@ -93,6 +95,71 @@ exports.analyzeImage = async (req, res) => {
 };
 
 /**
+ * POST /nutrition/upload-image
+ * Загрузка изображения блюда в Supabase Storage
+ */
+exports.uploadNutritionImage = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromBody = req.body?.userId;
+    const userId = userIdFromToken || userIdFromBody;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { imageBase64 } = req.body;
+
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({
+        error: "imageBase64 is required",
+      });
+    }
+
+    // Убираем префикс data:image/...;base64, если есть
+    const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    
+    // Конвертируем base64 в Buffer
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+
+    // Генерируем уникальное имя файла
+    const timestamp = Date.now();
+    const randomString = crypto.randomBytes(8).toString('hex');
+    const fileName = `${userId}/${timestamp}-${randomString}.jpg`;
+
+    // Загружаем в Supabase Storage
+    const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
+      .from('nutrition-images')
+      .upload(fileName, imageBuffer, {
+        contentType: 'image/jpeg',
+        upsert: false,
+      });
+
+    if (uploadError) {
+      console.error("[uploadNutritionImage] Storage upload error:", uploadError);
+      return res.status(500).json({
+        error: "Failed to upload image: " + uploadError.message,
+      });
+    }
+
+    // Получаем публичный URL
+    const { data: urlData } = supabaseAdmin.storage
+      .from('nutrition-images')
+      .getPublicUrl(fileName);
+
+    const publicUrl = urlData.publicUrl;
+
+    console.log("[uploadNutritionImage] Success, uploaded image:", publicUrl);
+    return res.status(200).json({ image_url: publicUrl });
+  } catch (err) {
+    console.error("[uploadNutritionImage] Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
  * POST /nutrition/entries
  * Сохранение записи питания
  */
@@ -116,7 +183,7 @@ exports.createEntry = async (req, res) => {
       });
     }
 
-    const { date, meal_type, title, calories, carbs, protein, fat, weight_grams, ingredients } = req.body;
+    const { date, meal_type, title, calories, carbs, protein, fat, weight_grams, ingredients, image_url } = req.body;
 
     // Валидация
     if (!date || !meal_type || !title || calories === undefined) {
@@ -150,6 +217,7 @@ exports.createEntry = async (req, res) => {
           fat: fat ? parseFloat(fat) : null,
           weight_grams: weight_grams ? parseInt(weight_grams) : null,
           ingredients: ingredients ? String(ingredients).trim() : null,
+          image_url: image_url ? String(image_url).trim() : null,
         },
       ])
       .select()
