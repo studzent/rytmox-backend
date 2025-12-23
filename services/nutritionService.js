@@ -98,6 +98,55 @@ function calculateCalorieGoal(tdee, goals) {
 }
 
 /**
+ * Расчёт дневной нормы воды на основе веса, роста, возраста, пола и уровня активности
+ * @param {number} weightKg - Вес в килограммах
+ * @param {number} heightCm - Рост в сантиметрах
+ * @param {number} age - Возраст в годах
+ * @param {string} gender - Пол: 'male' или 'female'
+ * @param {string} activityLevel - Уровень активности: 'sedentary', 'light', 'moderate', 'high', 'very_high'
+ * @returns {number} Дневная норма воды в миллилитрах
+ */
+function calculateWaterGoal(weightKg, heightCm, age, gender, activityLevel) {
+  if (!weightKg || !heightCm || !age || !gender || !activityLevel) {
+    return null;
+  }
+  
+  // Базовая формула: 30-35 мл на кг веса
+  // Используем среднее значение 32.5 мл/кг
+  const baseWater = weightKg * 32.5;
+  
+  // Коэффициенты активности (чем выше активность, тем больше воды нужно)
+  const activityMultipliers = {
+    sedentary: 1.0,
+    light: 1.1,
+    moderate: 1.2,
+    high: 1.3,
+    very_high: 1.4,
+  };
+  
+  const multiplier = activityMultipliers[activityLevel] || 1.0;
+  let waterGoal = baseWater * multiplier;
+  
+  // Учитываем пол (мужчины обычно нуждаются в немного большем количестве воды)
+  if (gender === 'male') {
+    waterGoal *= 1.05;
+  }
+  
+  // Учитываем возраст (пожилые люди могут нуждаться в меньшем количестве)
+  if (age > 65) {
+    waterGoal *= 0.95;
+  } else if (age < 18) {
+    // Подростки могут нуждаться в большем количестве
+    waterGoal *= 1.1;
+  }
+  
+  // Ограничения: минимум 1500 мл, максимум 4000 мл
+  waterGoal = Math.max(1500, Math.min(4000, Math.round(waterGoal)));
+  
+  return waterGoal;
+}
+
+/**
  * Пересчёт калорий на основе данных профиля
  * @param {string} userId - ID пользователя
  * @param {object} profileData - Данные профиля (частичные, могут быть не все поля)
@@ -176,11 +225,15 @@ async function recalculateCalories(userId, profileData = {}) {
     
     const calorieGoal = calculateCalorieGoal(tdee, goals);
     
+    // Расчёт цели воды
+    const waterGoal = calculateWaterGoal(weight, height, age, gender, activityLevel);
+    
     console.log('[recalculateCalories] Calculated values:', {
       age,
       bmr,
       tdee,
       calorieGoal,
+      waterGoal,
       activityLevel,
       goals,
     });
@@ -190,6 +243,7 @@ async function recalculateCalories(userId, profileData = {}) {
         bmr: Math.round(bmr),
         tdee: Math.round(tdee),
         calorie_goal: calorieGoal,
+        water_goal: waterGoal,
       },
       error: null,
     };

@@ -1,4 +1,5 @@
 const nutritionService = require("../services/nutritionService");
+const nutritionTargetsEngine = require("../services/nutritionTargetsEngine");
 const { supabaseAdmin } = require("../utils/supabaseClient");
 const crypto = require("crypto");
 
@@ -192,7 +193,7 @@ exports.createEntry = async (req, res) => {
       });
     }
 
-    const validMealTypes = ['breakfast', 'lunch', 'dinner', 'snack'];
+    const validMealTypes = ['breakfast', 'lunch', 'dinner', 'snack', 'water'];
     if (!validMealTypes.includes(meal_type)) {
       console.error("[createEntry] Invalid meal_type:", meal_type);
       return res.status(400).json({
@@ -272,6 +273,15 @@ exports.getEntries = async (req, res) => {
       });
     }
 
+    // Валидация формата даты (защита от конфликта с /entries/range)
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(date)) {
+      console.error("[getEntries] Invalid date format:", date);
+      return res.status(400).json({
+        error: "Invalid date format. Use YYYY-MM-DD",
+      });
+    }
+
     console.log("[getEntries] Querying nutrition_entries for userId:", userId, "date:", date);
     
     try {
@@ -326,6 +336,116 @@ exports.getEntries = async (req, res) => {
     console.error("[getEntries] Error name:", err.name);
     console.error("[getEntries] Error message:", err.message);
     console.error("[getEntries] Error stack:", err.stack);
+    
+    // Более детальное сообщение об ошибке
+    const errorMessage = err.message || "Internal server error";
+    return res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+};
+
+/**
+ * GET /nutrition/entries/range?from=YYYY-MM-DD&to=YYYY-MM-DD
+ * Получение записей питания за диапазон дат
+ */
+exports.getEntriesRange = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromBody = req.body?.userId;
+    const userIdFromQuery = req.query?.userId;
+    const userId = userIdFromToken || userIdFromBody || userIdFromQuery;
+
+    console.log("[getEntriesRange] Request received:", {
+      userIdFromToken: !!userIdFromToken,
+      userIdFromBody: !!userIdFromBody,
+      userIdFromQuery: !!userIdFromQuery,
+      userId: userId,
+      from: req.query.from,
+      to: req.query.to,
+    });
+
+    if (!userId) {
+      console.error("[getEntriesRange] userId is missing");
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      console.error("[getEntriesRange] from or to is missing");
+      return res.status(400).json({
+        error: "from and to query parameters are required (format: YYYY-MM-DD)",
+      });
+    }
+
+    // Валидация формата дат
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(from) || !dateRegex.test(to)) {
+      return res.status(400).json({
+        error: "Invalid date format. Use YYYY-MM-DD",
+      });
+    }
+
+    console.log("[getEntriesRange] Querying nutrition_entries for userId:", userId, "from:", from, "to:", to);
+    
+    try {
+      const { data, error } = await supabaseAdmin
+        .from("nutrition_entries")
+        .select("*")
+        .eq("user_id", userId)
+        .gte("date", from)
+        .lte("date", to)
+        .order("date", { ascending: true })
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error("[getEntriesRange] Supabase error:", error);
+        console.error("[getEntriesRange] Error code:", error.code);
+        console.error("[getEntriesRange] Error message:", error.message);
+        console.error("[getEntriesRange] Error details:", JSON.stringify(error, null, 2));
+        
+        // Проверка на отсутствие таблицы
+        if (error.message && error.message.includes("relation") && error.message.includes("does not exist")) {
+          return res.status(500).json({ 
+            error: "Table 'nutrition_entries' not found. Please apply migrations and wait 30 seconds for schema cache to update.",
+            code: "TABLE_NOT_FOUND"
+          });
+        }
+        
+        return res.status(500).json({ error: error.message || "Database error" });
+      }
+
+      console.log("[getEntriesRange] Success, found", data?.length || 0, "entries");
+      
+      // Supabase автоматически парсит JSONB, но убеждаемся что ingredients - это массив
+      const processedData = (data || []).map(entry => {
+        if (entry.ingredients && typeof entry.ingredients === 'string') {
+          try {
+            entry.ingredients = JSON.parse(entry.ingredients);
+          } catch (e) {
+            // Если не JSON, оставляем как есть или конвертируем в массив
+            entry.ingredients = null;
+          }
+        }
+        return entry;
+      });
+      
+      return res.status(200).json(processedData);
+    } catch (queryError) {
+      console.error("[getEntriesRange] Query execution error:", queryError);
+      console.error("[getEntriesRange] Query error stack:", queryError.stack);
+      throw queryError; // Пробросим дальше для обработки в catch блоке
+    }
+
+  } catch (err) {
+    console.error("[getEntriesRange] Unexpected error:", err);
+    console.error("[getEntriesRange] Error name:", err.name);
+    console.error("[getEntriesRange] Error message:", err.message);
+    console.error("[getEntriesRange] Error stack:", err.stack);
     
     // Более детальное сообщение об ошибке
     const errorMessage = err.message || "Internal server error";

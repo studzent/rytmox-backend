@@ -835,10 +835,14 @@ async function upsertUserProfile(userId, payload) {
             profileData.bmr = calorieData.bmr;
             profileData.tdee = calorieData.tdee;
             profileData.calorie_goal = calorieData.calorie_goal;
-            console.log('[upsertUserProfile] Calories recalculated:', {
+            if (calorieData.water_goal) {
+              profileData.water_goal = calorieData.water_goal;
+            }
+            console.log('[upsertUserProfile] Calories and water recalculated:', {
               bmr: calorieData.bmr,
               tdee: calorieData.tdee,
               calorie_goal: calorieData.calorie_goal,
+              water_goal: calorieData.water_goal,
             });
           }
         }
@@ -902,10 +906,14 @@ async function upsertUserProfile(userId, payload) {
           newUserData.bmr = calorieData.bmr;
           newUserData.tdee = calorieData.tdee;
           newUserData.calorie_goal = calorieData.calorie_goal;
-          console.log('[upsertUserProfile] Calories calculated for new user:', {
+          if (calorieData.water_goal) {
+            newUserData.water_goal = calorieData.water_goal;
+          }
+          console.log('[upsertUserProfile] Calories and water calculated for new user:', {
             bmr: calorieData.bmr,
             tdee: calorieData.tdee,
             calorie_goal: calorieData.calorie_goal,
+            water_goal: calorieData.water_goal,
           });
         }
       }
