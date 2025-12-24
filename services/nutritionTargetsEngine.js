@@ -98,7 +98,7 @@ async function computeWeightBase(userId) {
         .eq("user_id", userId)
         .order("measured_at", { ascending: false })
         .limit(1)
-        .single();
+        .maybeSingle();
 
       if (latestError || !latest) {
         return { data: null, error: latestError || { message: "No weight measurements found", code: "NO_DATA" } };
@@ -334,7 +334,9 @@ async function getNutritionTargets(userId) {
       .from("user_nutrition_targets")
       .select("*")
       .eq("user_id", userId)
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (error) {
       if (error.code === 'PGRST116') {
@@ -445,18 +447,29 @@ async function recalcAndPersist(userId, eventType, reason) {
     // Если есть текущие цели, обновляем, иначе создаём
     let result;
     if (currentTargets) {
-      result = await supabaseAdmin
+      // Обновляем все записи для пользователя (на случай дубликатов)
+      const updateResult = await supabaseAdmin
         .from("user_nutrition_targets")
         .update(targetsData)
         .eq("user_id", userId)
         .select()
-        .single();
+        .order("created_at", { ascending: false })
+        .limit(1);
+      
+      if (updateResult.error) {
+        result = updateResult;
+      } else if (updateResult.data && updateResult.data.length > 0) {
+        // Возвращаем последнюю обновлённую запись
+        result = { data: updateResult.data[0], error: null };
+      } else {
+        result = { data: null, error: { message: "No records updated", code: "UPDATE_ERROR" } };
+      }
     } else {
       result = await supabaseAdmin
         .from("user_nutrition_targets")
         .insert([{ ...targetsData, auto_update_enabled: true }])
         .select()
-        .single();
+        .maybeSingle();
     }
 
     if (result.error) {
@@ -582,18 +595,25 @@ async function setAutoUpdateEnabled(userId, enabled) {
       };
     }
 
-    const { data, error } = await supabaseAdmin
+    // Обновляем все записи для пользователя (на случай дубликатов)
+    const updateResult = await supabaseAdmin
       .from("user_nutrition_targets")
       .update({ auto_update_enabled: enabled })
       .eq("user_id", userId)
       .select()
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-    if (error) {
-      return { data: null, error };
+    if (updateResult.error) {
+      return { data: null, error: updateResult.error };
     }
 
-    return { data, error: null };
+    if (updateResult.data && updateResult.data.length > 0) {
+      // Возвращаем последнюю обновлённую запись
+      return { data: updateResult.data[0], error: null };
+    }
+
+    return { data: null, error: { message: "No records updated", code: "UPDATE_ERROR" } };
   } catch (err) {
     console.error('[setAutoUpdateEnabled] Unexpected error:', err);
     return { data: null, error: { message: err.message || "Internal error", code: "INTERNAL_ERROR" } };
