@@ -1007,6 +1007,13 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
         }
       }
 
+      // Логируем thumbnail_url из exercises для отладки
+      if (exercise.thumbnail_url) {
+        console.log(`[aiService] Exercise ${exercise.slug} has thumbnail_url from exercises: ${exercise.thumbnail_url.substring(0, 50)}...`);
+      } else {
+        console.warn(`[aiService] Exercise ${exercise.slug} has NO thumbnail_url in exercises table`);
+      }
+      
       mappedPlan.push({
         exercise_id: exercise.id,
         exercise_slug: exercise.slug, // Use actual exercise slug, not LLM's
@@ -1033,7 +1040,11 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
         .select("exercise_id, video_url, thumbnail_url, variant, language")
         .in("exercise_id", exerciseIds);
 
-      if (!videosError && videos && videos.length > 0) {
+      if (videosError) {
+        console.warn(`[aiService] Error loading videos:`, videosError);
+      } else if (videos && videos.length > 0) {
+        console.log(`[aiService] Loaded ${videos.length} videos for ${exerciseIds.length} exercises`);
+        
         // Группируем видео по exercise_id
         const videosByExercise = new Map();
         videos.forEach(video => {
@@ -1053,16 +1064,31 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
 
           if (preferredVideo && preferredVideo.thumbnail_url) {
             videoMap.set(exerciseId, preferredVideo.thumbnail_url);
+            console.log(`[aiService] Found video thumbnail for exercise ${exerciseId}: ${preferredVideo.thumbnail_url.substring(0, 50)}...`);
+          } else {
+            console.warn(`[aiService] No thumbnail_url found for exercise ${exerciseId} in videos:`, exerciseVideos.map(v => ({ variant: v.variant, language: v.language, has_thumb: !!v.thumbnail_url })));
           }
         });
+      } else {
+        console.warn(`[aiService] No videos found for exercises:`, exerciseIds);
       }
     }
 
     // Добавляем video_thumbnail_url к каждому упражнению
-    mappedPlan = mappedPlan.map(ex => ({
-      ...ex,
-      video_thumbnail_url: videoMap.get(ex.exercise_id) || null,
-    }));
+    mappedPlan = mappedPlan.map(ex => {
+      const videoThumb = videoMap.get(ex.exercise_id);
+      const result = {
+        ...ex,
+        video_thumbnail_url: videoThumb || null,
+      };
+      
+      // Логируем для отладки
+      if (!videoThumb && !ex.thumbnail_url) {
+        console.warn(`[aiService] No thumbnail (video or exercise) for exercise ${ex.exercise_slug || ex.exercise_id}`);
+      }
+      
+      return result;
+    });
 
     if (missingSlugs.length > 0) {
       console.warn(`[aiService] Missing exercises for slugs: ${missingSlugs.join(", ")}`);
