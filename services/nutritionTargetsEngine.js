@@ -448,21 +448,31 @@ async function recalcAndPersist(userId, eventType, reason) {
     let result;
     if (currentTargets) {
       // Обновляем все записи для пользователя (на случай дубликатов)
+      // Сначала обновляем все записи
       const updateResult = await supabaseAdmin
         .from("user_nutrition_targets")
         .update(targetsData)
-        .eq("user_id", userId)
-        .select()
-        .order("created_at", { ascending: false })
-        .limit(1);
+        .eq("user_id", userId);
       
       if (updateResult.error) {
         result = updateResult;
-      } else if (updateResult.data && updateResult.data.length > 0) {
-        // Возвращаем последнюю обновлённую запись
-        result = { data: updateResult.data[0], error: null };
       } else {
-        result = { data: null, error: { message: "No records updated", code: "UPDATE_ERROR" } };
+        // Затем получаем одну обновлённую запись
+        const selectResult = await supabaseAdmin
+          .from("user_nutrition_targets")
+          .select()
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        
+        if (selectResult.error) {
+          result = selectResult;
+        } else if (selectResult.data) {
+          result = { data: selectResult.data, error: null };
+        } else {
+          result = { data: null, error: { message: "No records found after update", code: "UPDATE_ERROR" } };
+        }
       }
     } else {
       result = await supabaseAdmin
