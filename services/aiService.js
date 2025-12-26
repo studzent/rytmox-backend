@@ -1023,6 +1023,47 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       });
     }
 
+    // Загружаем видео для всех упражнений одним запросом
+    const exerciseIds = mappedPlan.map(ex => ex.exercise_id);
+    let videoMap = new Map();
+    
+    if (exerciseIds.length > 0) {
+      const { data: videos, error: videosError } = await supabaseAdmin
+        .from("exercise_videos")
+        .select("exercise_id, video_url, thumbnail_url, variant, language")
+        .in("exercise_id", exerciseIds);
+
+      if (!videosError && videos && videos.length > 0) {
+        // Группируем видео по exercise_id
+        const videosByExercise = new Map();
+        videos.forEach(video => {
+          if (!videosByExercise.has(video.exercise_id)) {
+            videosByExercise.set(video.exercise_id, []);
+          }
+          videosByExercise.get(video.exercise_id).push(video);
+        });
+
+        // Для каждого упражнения выбираем предпочтительное видео
+        videosByExercise.forEach((exerciseVideos, exerciseId) => {
+          // Ищем предпочтительно default/en, затем default, затем любое
+          const preferredVideo =
+            exerciseVideos.find((v) => v.variant === "default" && v.language === "en") ||
+            exerciseVideos.find((v) => v.variant === "default") ||
+            exerciseVideos[0];
+
+          if (preferredVideo && preferredVideo.thumbnail_url) {
+            videoMap.set(exerciseId, preferredVideo.thumbnail_url);
+          }
+        });
+      }
+    }
+
+    // Добавляем video_thumbnail_url к каждому упражнению
+    mappedPlan = mappedPlan.map(ex => ({
+      ...ex,
+      video_thumbnail_url: videoMap.get(ex.exercise_id) || null,
+    }));
+
     if (missingSlugs.length > 0) {
       console.warn(`[aiService] Missing exercises for slugs: ${missingSlugs.join(", ")}`);
     }
@@ -1061,22 +1102,7 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       };
     }
 
-    // 9. Создание записи workouts в Supabase
-    const workoutName = meta.title || `AI ${level} ${workoutType}`;
-    // Используем переданную дату или текущую дату
-    const workoutDate = date || new Date().toISOString().split("T")[0]; // Дата в формате YYYY-MM-DD
-
-    // Формируем notes как JSON с goal и description
-    const notesData = {};
-    if (goal) {
-      notesData.goal = goal;
-    }
-    if (meta.description) {
-      notesData.description = meta.description;
-    }
-    const workoutNotes = Object.keys(notesData).length > 0 ? JSON.stringify(notesData) : null;
-
-    // Проверяем существование пользователя перед созданием тренировки
+    // 9. Проверяем существование пользователя перед созданием тренировки
     console.log(`[aiService] Creating workout for userId: ${userId}`);
     if (userId) {
       console.log(`[aiService] Validating user existence for userId: ${userId}`);
@@ -1113,6 +1139,43 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       };
     }
 
+    // 10. Проверка на первую тренировку пользователя и формирование названия
+    let workoutName = meta.title || `AI ${level} ${workoutType}`;
+    
+    // Проверяем, есть ли у пользователя уже тренировки
+    if (userId) {
+      const { data: existingWorkouts, error: workoutsCheckError } = await supabaseAdmin
+        .from("workouts")
+        .select("id")
+        .eq("user_id", userId)
+        .limit(1);
+      
+      if (!workoutsCheckError && existingWorkouts) {
+        if (existingWorkouts.length === 0) {
+          // Это первая тренировка пользователя
+          workoutName = "Ваша первая тренировка";
+          console.log(`[aiService] First workout for user ${userId}, setting name: "${workoutName}"`);
+        } else {
+          // Это не первая тренировка
+          workoutName = "Следующая тренировка";
+          console.log(`[aiService] Subsequent workout for user ${userId}, setting name: "${workoutName}"`);
+        }
+      }
+    }
+    
+    // Используем переданную дату или текущую дату
+    const workoutDate = date || new Date().toISOString().split("T")[0]; // Дата в формате YYYY-MM-DD
+
+    // Формируем notes как JSON с goal и description
+    const notesData = {};
+    if (goal) {
+      notesData.goal = goal;
+    }
+    if (meta.description) {
+      notesData.description = meta.description;
+    }
+    const workoutNotes = Object.keys(notesData).length > 0 ? JSON.stringify(notesData) : null;
+
     // Теперь безопасно создаем тренировку
     const { data: workout, error: workoutError } = await supabaseAdmin
       .from("workouts")
@@ -1122,6 +1185,7 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
           name: workoutName,
           date: workoutDate,
           notes: workoutNotes,
+          duration_minutes: durationMinutes, // Сохраняем запланированную длительность
         },
       ])
       .select()
@@ -1210,7 +1274,7 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
     const logUserId = userId ?? ANONYMOUS_USER_ID;
     await logAIRequest(logUserId, "workout", requestData, responseData);
 
-    // 12. Возвращаемое значение
+    // 13. Возвращаемое значение
     const totalDuration = Date.now() - functionStartTime;
     console.log(`[aiService] ✅ generateWorkout completed successfully in ${totalDuration}ms`);
     console.log(`[aiService] Created workout ID: ${workoutId}, exercises: ${mappedPlan.length}`);
@@ -1226,6 +1290,7 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
         },
         plan: mappedPlan,
         meta,
+        durationMinutes, // Возвращаем запланированную длительность
       },
       error: null,
     };

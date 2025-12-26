@@ -156,6 +156,7 @@ async function getWorkoutById(workoutId) {
         goal: goal,
         description: description,
         exercises: validExercises,
+        duration_minutes: workout.duration_minutes || null, // Возвращаем сохраненную длительность
       },
       error: null,
     };
@@ -182,6 +183,41 @@ async function getWorkoutByIdAI(workoutId) {
   if (error) return { data: null, error };
   if (!workoutDetails) return { data: null, error: null };
 
+  // Загружаем видео для всех упражнений одним запросом
+  const exerciseIds = (workoutDetails.exercises || []).map(ex => ex.exercise_id);
+  let videoMap = new Map();
+  
+  if (exerciseIds.length > 0) {
+    const { data: videos, error: videosError } = await supabaseAdmin
+      .from("exercise_videos")
+      .select("exercise_id, video_url, thumbnail_url, variant, language")
+      .in("exercise_id", exerciseIds);
+
+    if (!videosError && videos && videos.length > 0) {
+      // Группируем видео по exercise_id
+      const videosByExercise = new Map();
+      videos.forEach(video => {
+        if (!videosByExercise.has(video.exercise_id)) {
+          videosByExercise.set(video.exercise_id, []);
+        }
+        videosByExercise.get(video.exercise_id).push(video);
+      });
+
+      // Для каждого упражнения выбираем предпочтительное видео
+      videosByExercise.forEach((exerciseVideos, exerciseId) => {
+        // Ищем предпочтительно default/en, затем default, затем любое
+        const preferredVideo =
+          exerciseVideos.find((v) => v.variant === "default" && v.language === "en") ||
+          exerciseVideos.find((v) => v.variant === "default") ||
+          exerciseVideos[0];
+
+        if (preferredVideo && preferredVideo.thumbnail_url) {
+          videoMap.set(exerciseId, preferredVideo.thumbnail_url);
+        }
+      });
+    }
+  }
+
   const plan = (workoutDetails.exercises || []).map((ex) => ({
     exercise_id: ex.exercise_id,
     exercise_slug: ex.slug,
@@ -190,6 +226,7 @@ async function getWorkoutByIdAI(workoutId) {
     main_muscle: ex.main_muscle,
     equipment: ex.equipment,
     thumbnail_url: ex.thumbnail_url || null,
+    video_thumbnail_url: videoMap.get(ex.exercise_id) || null,
     sets: ex.sets ?? null,
     reps: ex.reps === null || ex.reps === undefined ? null : String(ex.reps),
     rest_sec: ex.rest_sec ?? null,
@@ -211,6 +248,7 @@ async function getWorkoutByIdAI(workoutId) {
         title: workoutDetails.name,
         description: workoutDetails.description || undefined,
       },
+      durationMinutes: workoutDetails.duration_minutes || null, // Возвращаем сохраненную длительность из getWorkoutById
     },
     error: null,
   };
