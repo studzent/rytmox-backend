@@ -975,7 +975,7 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       exerciseMap.set(ex.slug, ex);
     });
 
-    const mappedPlan = [];
+    let mappedPlan = [];
     const missingSlugs = [];
     const correctedSlugs = [];
 
