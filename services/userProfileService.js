@@ -793,6 +793,8 @@ async function upsertUserProfile(userId, payload) {
       notifications_enabled: profileData.notifications_enabled,
       hasNutritionEnabled: 'nutrition_enabled' in profileData,
       nutrition_enabled: profileData.nutrition_enabled,
+      hasMainTabModule: 'main_tab_module' in profileData,
+      main_tab_module: profileData.main_tab_module,
       hasCurrentStep: 'current_step' in profileData,
       current_step: profileData.current_step,
       hasRestrictions: 'restrictions' in profileData,
