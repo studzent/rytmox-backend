@@ -420,6 +420,9 @@ async function getUserProfile(userId) {
       training_environment: apiEnvFromDb(envRes.data),
       weight_kg: weightRes.data ?? null,
       special_programs: specialPrograms,
+      main_tab_module: data.main_tab_module,
+      main_tab_module_type: typeof data.main_tab_module,
+      nutrition_enabled: data.nutrition_enabled,
     });
 
     return {
@@ -691,9 +694,17 @@ async function upsertUserProfile(userId, payload) {
     }
     if (payload.main_tab_module !== undefined) {
       // Валидация: только 'nutrition' или 'body'
+      console.log(`[upsertUserProfile] Processing main_tab_module:`, {
+        value: payload.main_tab_module,
+        type: typeof payload.main_tab_module,
+        is_null: payload.main_tab_module === null,
+        is_undefined: payload.main_tab_module === undefined,
+      });
       if (payload.main_tab_module === null || payload.main_tab_module === 'nutrition' || payload.main_tab_module === 'body') {
         profileData.main_tab_module = payload.main_tab_module;
+        console.log(`[upsertUserProfile] ✅ main_tab_module set to profileData:`, profileData.main_tab_module);
       } else {
+        console.error(`[upsertUserProfile] ❌ Invalid main_tab_module value:`, payload.main_tab_module);
         return {
           data: null,
           error: {
@@ -956,6 +967,14 @@ async function upsertUserProfile(userId, payload) {
       });
       return { data: null, error: result.error };
     }
+
+    // Логируем что вернулось из БД после сохранения
+    console.log(`[upsertUserProfile] ✅ Profile saved successfully. Returned from DB:`, {
+      main_tab_module: result.data?.main_tab_module,
+      main_tab_module_type: typeof result.data?.main_tab_module,
+      nutrition_enabled: result.data?.nutrition_enabled,
+      all_keys: Object.keys(result.data || {}),
+    });
 
     // Извлекаем special_programs из restrictions.specialPrograms для обратной совместимости
     const restrictions = result.data?.restrictions || {};

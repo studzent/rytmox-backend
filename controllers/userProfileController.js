@@ -50,12 +50,22 @@ exports.getProfile = async (req, res) => {
       contraindications: data.contraindications || null,
       notifications_enabled: data.notifications_enabled || null,
       nutrition_enabled: data.nutrition_enabled || null,
+      // ВАЖНО: Используем явную проверку, чтобы сохранить null значения
+      main_tab_module: (data.main_tab_module !== undefined) ? data.main_tab_module : null,
       current_step: data.current_step || null,
       weight_kg: data.weight_kg || null,
       height_cm: data.height_cm || null,
       body_focus_zones: data.body_focus_zones || null,
       emphasized_muscles: data.emphasized_muscles || null,
     };
+
+    console.log(`[getProfile] ✅ Sending response with main_tab_module:`, {
+      main_tab_module: response.main_tab_module,
+      main_tab_module_type: typeof response.main_tab_module,
+      data_main_tab_module: data.main_tab_module,
+      data_main_tab_module_type: typeof data.main_tab_module,
+      nutrition_enabled: response.nutrition_enabled,
+    });
 
     return res.status(200).json(response);
   } catch (err) {
@@ -160,13 +170,22 @@ exports.updateProfile = async (req, res) => {
       contraindications: hydrated.contraindications || null,
       notifications_enabled: hydrated.notifications_enabled || null,
       nutrition_enabled: hydrated.nutrition_enabled || null,
-      main_tab_module: hydrated.main_tab_module || null,
+      // ВАЖНО: Используем явную проверку, чтобы сохранить null значения
+      main_tab_module: (hydrated.main_tab_module !== undefined) ? hydrated.main_tab_module : null,
       current_step: hydrated.current_step || null,
       weight_kg: hydrated.weight_kg || null,
       height_cm: hydrated.height_cm || null,
       body_focus_zones: hydrated.body_focus_zones || null,
       emphasized_muscles: hydrated.emphasized_muscles || null,
     };
+
+    console.log(`[updateProfile] ✅ Sending response with main_tab_module:`, {
+      main_tab_module: response.main_tab_module,
+      main_tab_module_type: typeof response.main_tab_module,
+      hydrated_main_tab_module: hydrated.main_tab_module,
+      hydrated_main_tab_module_type: typeof hydrated.main_tab_module,
+      nutrition_enabled: response.nutrition_enabled,
+    });
 
     return res.status(200).json(response);
   } catch (err) {
