@@ -332,9 +332,9 @@ async function getNutritionTargets(userId) {
 
     const { data, error } = await supabaseAdmin
       .from("user_nutrition_targets")
-      .select("*")
+      .select("user_id, target_kcal, target_protein_g, target_fat_g, target_carbs_g, target_water_ml, computed_from_weight_kg, goal_type, activity_level, auto_update_enabled, updated_at, last_auto_recalc_at, last_profile_hash")
       .eq("user_id", userId)
-      .order("created_at", { ascending: false })
+      .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
@@ -444,43 +444,21 @@ async function recalcAndPersist(userId, eventType, reason) {
       last_profile_hash: profileHash,
     };
 
-    // Если есть текущие цели, обновляем, иначе создаём
-    let result;
-    if (currentTargets) {
-      // Обновляем все записи для пользователя (на случай дубликатов)
-      // Сначала обновляем все записи
-      const updateResult = await supabaseAdmin
-        .from("user_nutrition_targets")
-        .update(targetsData)
-        .eq("user_id", userId);
-      
-      if (updateResult.error) {
-        result = updateResult;
-      } else {
-        // Затем получаем одну обновлённую запись
-        const selectResult = await supabaseAdmin
-          .from("user_nutrition_targets")
-          .select()
-          .eq("user_id", userId)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        
-        if (selectResult.error) {
-          result = selectResult;
-        } else if (selectResult.data) {
-          result = { data: selectResult.data, error: null };
-        } else {
-          result = { data: null, error: { message: "No records found after update", code: "UPDATE_ERROR" } };
-        }
-      }
-    } else {
-      result = await supabaseAdmin
-        .from("user_nutrition_targets")
-        .insert([{ ...targetsData, auto_update_enabled: true }])
-        .select()
-        .maybeSingle();
-    }
+    // Используем upsert для избежания ошибок дубликатов
+    // user_id является PRIMARY KEY, поэтому может быть только одна запись на пользователя
+    const upsertData = {
+      ...targetsData,
+      auto_update_enabled: currentTargets?.auto_update_enabled ?? true,
+    };
+    
+    const result = await supabaseAdmin
+      .from("user_nutrition_targets")
+      .upsert(upsertData, {
+        onConflict: 'user_id',
+        ignoreDuplicates: false,
+      })
+      .select("user_id, target_kcal, target_protein_g, target_fat_g, target_carbs_g, target_water_ml, computed_from_weight_kg, goal_type, activity_level, auto_update_enabled, updated_at, last_auto_recalc_at, last_profile_hash")
+      .single();
 
     if (result.error) {
       return { data: null, error: result.error };
@@ -611,7 +589,7 @@ async function setAutoUpdateEnabled(userId, enabled) {
       .update({ auto_update_enabled: enabled })
       .eq("user_id", userId)
       .select()
-      .order("created_at", { ascending: false })
+      .order("updated_at", { ascending: false })
       .limit(1);
 
     if (updateResult.error) {

@@ -160,6 +160,7 @@ exports.updateProfile = async (req, res) => {
       contraindications: hydrated.contraindications || null,
       notifications_enabled: hydrated.notifications_enabled || null,
       nutrition_enabled: hydrated.nutrition_enabled || null,
+      main_tab_module: hydrated.main_tab_module || null,
       current_step: hydrated.current_step || null,
       weight_kg: hydrated.weight_kg || null,
       height_cm: hydrated.height_cm || null,

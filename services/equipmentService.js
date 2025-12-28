@@ -82,8 +82,28 @@ async function getEquipmentItems(filters = {}) {
       });
     }
 
+    // Группируем по equipment_group для фронтенда
+    // Фронтенд ожидает EquipmentGroup[] формат: [{ equipment_group: string, items: EquipmentItem[] }]
+    const groupedMap = new Map();
+    
+    equipmentList.forEach((item) => {
+      const groupName = item.equipment_group || 'Other';
+      if (!groupedMap.has(groupName)) {
+        groupedMap.set(groupName, {
+          equipment_group: groupName,
+          items: [],
+        });
+      }
+      groupedMap.get(groupName).items.push(item);
+    });
+
+    // Преобразуем Map в массив
+    const groupedData = Array.from(groupedMap.values());
+
+    console.log(`[equipmentService] Grouped equipment into ${groupedData.length} groups`);
+
     return {
-      data: equipmentList,
+      data: groupedData,
       error: null,
     };
   } catch (err) {

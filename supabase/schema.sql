@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS workouts (
     date DATE NOT NULL,
     notes TEXT,
     completed_at TIMESTAMP WITH TIME ZONE,
+    duration_minutes INTEGER,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

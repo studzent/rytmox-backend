@@ -1,6 +1,5 @@
--- Миграция: Добавление типа приёма пищи 'water' для отслеживания воды
--- Дата: 2025-01-XX
--- Описание: Расширяем constraint meal_type для поддержки записи воды
+-- Быстрое исправление: добавление 'water' в constraint meal_type
+-- Выполните этот скрипт, если миграция 010 уже была применена без исправления constraint
 
 -- Удаляем старый constraint и создаём новый с добавлением 'water'
 DO $$ 
@@ -14,7 +13,7 @@ BEGIN
         ALTER TABLE nutrition_entries 
         DROP CONSTRAINT nutrition_entries_meal_type_check;
         
-        RAISE NOTICE 'Старый constraint удалён';
+        RAISE NOTICE 'Старый constraint meal_type удалён';
     END IF;
     
     -- Создаём новый constraint с добавлением 'water'
@@ -22,7 +21,7 @@ BEGIN
     ADD CONSTRAINT nutrition_entries_meal_type_check 
     CHECK (meal_type IN ('breakfast', 'lunch', 'dinner', 'snack', 'water'));
     
-    RAISE NOTICE 'Новый constraint создан с поддержкой типа "water"';
+    RAISE NOTICE 'Новый constraint meal_type создан с поддержкой типа "water"';
 END $$;
 
 

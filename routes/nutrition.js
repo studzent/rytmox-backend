@@ -16,6 +16,7 @@ router.post("/upload-image", authOptional, nutritionController.uploadNutritionIm
 
 // Записи питания
 router.post("/entries", authOptional, nutritionController.createEntry);
+router.post("/entries/batch", authOptional, nutritionController.batchCreateWaterEntries); // Батч-сохранение воды
 router.get("/entries/range", authOptional, nutritionController.getEntriesRange); // Должен быть ПЕРЕД /entries/:date
 router.get("/entries/:date", authOptional, nutritionController.getEntries);
 router.put("/entries/:id", authOptional, nutritionController.updateEntry);

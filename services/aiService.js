@@ -158,6 +158,148 @@ function parseReps(value) {
 }
 
 /**
+ * Словарь переводов групп мышц на русский язык
+ */
+const MUSCLE_GROUP_TRANSLATIONS = {
+  // Основные группы
+  chest: 'грудь',
+  back: 'спину',
+  legs: 'ноги',
+  glutes: 'ягодицы',
+  shoulders: 'плечи',
+  arms: 'руки',
+  core: 'пресс',
+  abs: 'пресс',
+  
+  // Детальные группы верхней части тела
+  biceps: 'бицепс',
+  triceps: 'трицепс',
+  forearms: 'предплечья',
+  lats: 'широчайшие',
+  traps: 'трапеции',
+  deltoids: 'дельты',
+  deltoids_front: 'передние дельты',
+  deltoids_side: 'средние дельты',
+  deltoids_rear: 'задние дельты',
+  rear_deltoids: 'задние дельты',
+  
+  // Детальные группы нижней части тела
+  quads: 'квадрицепсы',
+  hamstrings: 'бицепс бедра',
+  calves: 'икры',
+  adductors: 'приводящие',
+  
+  // Кор
+  obliques: 'косые мышцы',
+  deep_core: 'глубокий кор',
+  
+  // Общие
+  full_body: 'всё тело',
+  fullbody: 'всё тело',
+};
+
+/**
+ * Группирует похожие группы мышц в общие категории
+ * @param {string[]} muscles - Массив групп мышц
+ * @returns {string[]} - Массив сгруппированных групп мышц
+ */
+function groupSimilarMuscles(muscles) {
+  const grouped = new Set();
+  
+  for (const muscle of muscles) {
+    const lowerMuscle = muscle.toLowerCase();
+    
+    // Группируем руки
+    if (['biceps', 'triceps', 'forearms', 'arms'].includes(lowerMuscle)) {
+      grouped.add('arms');
+      continue;
+    }
+    
+    // Группируем плечи
+    if (['deltoids', 'deltoids_front', 'deltoids_side', 'deltoids_rear', 'rear_deltoids', 'shoulders'].includes(lowerMuscle)) {
+      grouped.add('shoulders');
+      continue;
+    }
+    
+    // Группируем спину
+    if (['lats', 'traps', 'back'].includes(lowerMuscle)) {
+      grouped.add('back');
+      continue;
+    }
+    
+    // Группируем кор
+    if (['core', 'abs', 'obliques', 'deep_core'].includes(lowerMuscle)) {
+      grouped.add('core');
+      continue;
+    }
+    
+    // Группируем ноги
+    if (['quads', 'hamstrings', 'calves', 'adductors', 'legs'].includes(lowerMuscle)) {
+      grouped.add('legs');
+      continue;
+    }
+    
+    // Остальные добавляем как есть
+    grouped.add(lowerMuscle);
+  }
+  
+  return Array.from(grouped);
+}
+
+/**
+ * Генерирует заголовок тренировки на основе групп мышц из упражнений
+ * @param {Array} mappedPlan - Массив упражнений с полем main_muscle
+ * @returns {string} - Заголовок тренировки на русском языке
+ */
+function generateWorkoutTitleFromMuscles(mappedPlan) {
+  if (!mappedPlan || mappedPlan.length === 0) {
+    return 'Тренировка';
+  }
+  
+  // Собираем все уникальные группы мышц
+  const muscles = new Set();
+  for (const exercise of mappedPlan) {
+    if (exercise.main_muscle) {
+      muscles.add(exercise.main_muscle.toLowerCase());
+    }
+  }
+  
+  if (muscles.size === 0) {
+    return 'Тренировка';
+  }
+  
+  // Группируем похожие группы мышц
+  const groupedMuscles = groupSimilarMuscles(Array.from(muscles));
+  
+  // Если групп слишком много (5+), используем "всё тело"
+  if (groupedMuscles.length >= 5) {
+    return 'Тренировка на всё тело';
+  }
+  
+  // Переводим группы мышц на русский
+  const translatedMuscles = groupedMuscles
+    .map(muscle => MUSCLE_GROUP_TRANSLATIONS[muscle] || muscle)
+    .filter(Boolean);
+  
+  if (translatedMuscles.length === 0) {
+    return 'Тренировка';
+  }
+  
+  // Формируем заголовок в зависимости от количества групп
+  if (translatedMuscles.length === 1) {
+    return `Тренировка на ${translatedMuscles[0]}`;
+  } else if (translatedMuscles.length === 2) {
+    return `Тренировка на ${translatedMuscles[0]} и ${translatedMuscles[1]}`;
+  } else if (translatedMuscles.length === 3) {
+    return `Тренировка на ${translatedMuscles[0]}, ${translatedMuscles[1]} и ${translatedMuscles[2]}`;
+  } else {
+    // 4 группы - используем запятые и "и" перед последней
+    const last = translatedMuscles.pop();
+    return `Тренировка на ${translatedMuscles.join(', ')} и ${last}`;
+  }
+}
+
+/**
  * Генерация тренировки через OpenAI
  * @param {object} params - Параметры генерации тренировки
  * @param {string|null} params.userId - ID пользователя (опционально)
@@ -1165,28 +1307,19 @@ Return ONLY valid JSON, no markdown, no code blocks.`;
       };
     }
 
-    // 10. Проверка на первую тренировку пользователя и формирование названия
-    let workoutName = meta.title || `AI ${level} ${workoutType}`;
+    // 10. Генерация названия тренировки на основе групп мышц
+    let workoutName = meta.title;
     
-    // Проверяем, есть ли у пользователя уже тренировки
-    if (userId) {
-      const { data: existingWorkouts, error: workoutsCheckError } = await supabaseAdmin
-        .from("workouts")
-        .select("id")
-        .eq("user_id", userId)
-        .limit(1);
-      
-      if (!workoutsCheckError && existingWorkouts) {
-        if (existingWorkouts.length === 0) {
-          // Это первая тренировка пользователя
-          workoutName = "Ваша первая тренировка";
-          console.log(`[aiService] First workout for user ${userId}, setting name: "${workoutName}"`);
-        } else {
-          // Это не первая тренировка
-          workoutName = "Следующая тренировка";
-          console.log(`[aiService] Subsequent workout for user ${userId}, setting name: "${workoutName}"`);
-        }
-      }
+    // Если в meta нет title, генерируем на основе групп мышц
+    if (!workoutName) {
+      workoutName = generateWorkoutTitleFromMuscles(mappedPlan);
+      console.log(`[aiService] Generated workout title from muscles: "${workoutName}"`);
+    }
+    
+    // Fallback на общий заголовок, если что-то пошло не так
+    if (!workoutName) {
+      workoutName = `AI ${level} ${workoutType}`;
+      console.log(`[aiService] Using fallback workout title: "${workoutName}"`);
     }
     
     // Используем переданную дату или текущую дату

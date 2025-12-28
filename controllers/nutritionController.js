@@ -831,3 +831,310 @@ exports.deleteEntry = async (req, res) => {
   }
 };
 
+/**
+ * GET /nutrition/targets/:userId
+ * Получение текущих целей питания
+ */
+exports.getTargets = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromParams = req.params?.userId;
+    const userIdFromBody = req.body?.userId;
+    const userId = userIdFromToken || userIdFromParams || userIdFromBody;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { data, error } = await nutritionTargetsEngine.getNutritionTargets(userId);
+
+    if (error) {
+      console.error("[getTargets] Error:", error);
+      return res.status(500).json({ error: error.message || "Internal server error" });
+    }
+
+    return res.status(200).json(data || null);
+  } catch (err) {
+    console.error("[getTargets] Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * POST /nutrition/targets/:userId/recalculate
+ * Принудительный пересчёт целей питания
+ */
+exports.recalculateTargets = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromParams = req.params?.userId;
+    const userIdFromBody = req.body?.userId;
+    const userId = userIdFromToken || userIdFromParams || userIdFromBody;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { eventType = 'profile_change', reason = 'Принудительный пересчёт' } = req.body;
+
+    const { data, error } = await nutritionTargetsEngine.recalcAndPersist(userId, eventType, reason);
+
+    if (error) {
+      console.error("[recalculateTargets] Error:", error);
+      return res.status(500).json({ error: error.message || "Internal server error" });
+    }
+
+    return res.status(200).json(data);
+  } catch (err) {
+    console.error("[recalculateTargets] Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * PUT /nutrition/targets/:userId/settings
+ * Обновление настроек автообновления целей
+ */
+exports.updateTargetSettings = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromParams = req.params?.userId;
+    const userIdFromBody = req.body?.userId;
+    const userId = userIdFromToken || userIdFromParams || userIdFromBody;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { auto_update_enabled } = req.body;
+
+    if (typeof auto_update_enabled !== 'boolean') {
+      return res.status(400).json({
+        error: "auto_update_enabled must be a boolean",
+      });
+    }
+
+    const { data, error } = await nutritionTargetsEngine.setAutoUpdateEnabled(userId, auto_update_enabled);
+
+    if (error) {
+      console.error("[updateTargetSettings] Error:", error);
+      return res.status(500).json({ error: error.message || "Internal server error" });
+    }
+
+    return res.status(200).json(data);
+  } catch (err) {
+    console.error("[updateTargetSettings] Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * GET /nutrition/targets/:userId/history
+ * Получение истории изменений целей
+ */
+exports.getTargetHistory = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromParams = req.params?.userId;
+    const userIdFromBody = req.body?.userId;
+    const userIdFromQuery = req.query?.userId;
+    const userId = userIdFromToken || userIdFromParams || userIdFromBody || userIdFromQuery;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const limit = parseInt(req.query?.limit) || 20;
+
+    const { data, error } = await nutritionTargetsEngine.getTargetHistory(userId, limit);
+
+    if (error) {
+      console.error("[getTargetHistory] Error:", error);
+      return res.status(500).json({ error: error.message || "Internal server error" });
+    }
+
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error("[getTargetHistory] Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * POST /nutrition/targets/:userId/maybe-recalc
+ * Проверка триггеров и пересчёт при необходимости
+ */
+exports.maybeRecalcTargets = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromParams = req.params?.userId;
+    const userIdFromBody = req.body?.userId;
+    const userId = userIdFromToken || userIdFromParams || userIdFromBody;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { data, error } = await nutritionTargetsEngine.maybeRecalcTargets(userId);
+
+    if (error) {
+      console.error("[maybeRecalcTargets] Error:", error);
+      return res.status(500).json({ error: error.message || "Internal server error" });
+    }
+
+    return res.status(200).json(data);
+  } catch (err) {
+    console.error("[maybeRecalcTargets] Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * POST /nutrition/entries/batch
+ * Батч-сохранение записей о воде
+ * Принимает массив записей: [{date, amount_ml, timestamp}, ...]
+ */
+exports.batchCreateWaterEntries = async (req, res) => {
+  try {
+    const userIdFromToken = req.user?.id;
+    const userIdFromBody = req.body?.userId;
+    const userId = userIdFromToken || userIdFromBody;
+
+    if (!userId) {
+      return res.status(400).json({
+        error: "userId is required",
+      });
+    }
+
+    const { entries } = req.body;
+
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return res.status(400).json({
+        error: "entries must be a non-empty array",
+      });
+    }
+
+    // Валидация записей
+    for (const entry of entries) {
+      if (!entry.date || typeof entry.date !== 'string') {
+        return res.status(400).json({
+          error: "Each entry must have a date (YYYY-MM-DD)",
+        });
+      }
+      if (typeof entry.amount_ml !== 'number') {
+        return res.status(400).json({
+          error: "Each entry must have a valid amount_ml (number)",
+        });
+      }
+    }
+
+    console.log(`[batchCreateWaterEntries] Processing ${entries.length} water entries for user ${userId}`);
+
+    const createdEntries = [];
+    const errors = [];
+
+    // Обрабатываем каждую запись
+    for (const entry of entries) {
+      try {
+        const { date, amount_ml, timestamp } = entry;
+
+        // Ищем существующую запись воды за эту дату
+        const { data: existingEntries, error: fetchError } = await supabaseAdmin
+          .from("nutrition_entries")
+          .select("id, weight_grams")
+          .eq("user_id", userId)
+          .eq("date", date)
+          .eq("meal_type", "water")
+          .limit(1);
+
+        if (fetchError) {
+          console.error(`[batchCreateWaterEntries] Error fetching existing entry for ${date}:`, fetchError);
+          errors.push({ date, error: fetchError.message });
+          continue;
+        }
+
+        if (existingEntries && existingEntries.length > 0) {
+          // Обновляем существующую запись
+          const existingEntry = existingEntries[0];
+          // amount_ml может быть отрицательным (когда пользователь уменьшает количество)
+          const newAmount = Math.max(0, existingEntry.weight_grams + amount_ml);
+
+          const { data: updatedEntry, error: updateError } = await supabaseAdmin
+            .from("nutrition_entries")
+            .update({
+              weight_grams: newAmount,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", existingEntry.id)
+            .select()
+            .single();
+
+          if (updateError) {
+            console.error(`[batchCreateWaterEntries] Error updating entry for ${date}:`, updateError);
+            errors.push({ date, error: updateError.message });
+            continue;
+          }
+
+          createdEntries.push({
+            id: updatedEntry.id,
+            date: updatedEntry.date,
+            amount_ml: updatedEntry.weight_grams,
+          });
+        } else {
+          // Создаём новую запись
+          // amount_ml может быть отрицательным, но в БД сохраняем минимум 0
+          const { data: newEntry, error: createError } = await supabaseAdmin
+            .from("nutrition_entries")
+            .insert({
+              user_id: userId,
+              date,
+              meal_type: "water",
+              title: "Вода",
+              calories: 0,
+              weight_grams: Math.max(0, amount_ml),
+              created_at: timestamp || new Date().toISOString(),
+            })
+            .select()
+            .single();
+
+          if (createError) {
+            console.error(`[batchCreateWaterEntries] Error creating entry for ${date}:`, createError);
+            errors.push({ date, error: createError.message });
+            continue;
+          }
+
+          createdEntries.push({
+            id: newEntry.id,
+            date: newEntry.date,
+            amount_ml: newEntry.weight_grams,
+          });
+        }
+      } catch (err) {
+        console.error(`[batchCreateWaterEntries] Unexpected error processing entry:`, err);
+        errors.push({ date: entry.date, error: err.message });
+      }
+    }
+
+    console.log(`[batchCreateWaterEntries] Successfully processed ${createdEntries.length}/${entries.length} entries`);
+
+    return res.status(200).json({
+      entries: createdEntries,
+      success: createdEntries.length,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (err) {
+    console.error("[batchCreateWaterEntries] Unexpected error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+};
+

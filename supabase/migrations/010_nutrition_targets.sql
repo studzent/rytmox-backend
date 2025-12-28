@@ -2,6 +2,38 @@
 -- Дата: 2025-01-XX
 -- Описание: Создаём таблицы для хранения целей питания (калории, БЖУ, вода) и истории их изменений
 
+-- Исправление constraint для meal_type: добавляем 'water' если его ещё нет
+DO $$ 
+BEGIN
+    -- Проверяем, существует ли constraint
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint 
+        WHERE conname = 'nutrition_entries_meal_type_check'
+    ) THEN
+        -- Удаляем старый constraint
+        ALTER TABLE nutrition_entries 
+        DROP CONSTRAINT nutrition_entries_meal_type_check;
+        
+        RAISE NOTICE 'Старый constraint meal_type удалён';
+    END IF;
+    
+    -- Создаём новый constraint с добавлением 'water'
+    ALTER TABLE nutrition_entries 
+    ADD CONSTRAINT nutrition_entries_meal_type_check 
+    CHECK (meal_type IN ('breakfast', 'lunch', 'dinner', 'snack', 'water'));
+    
+    RAISE NOTICE 'Новый constraint meal_type создан с поддержкой типа "water"';
+END $$;
+
+-- Функция для автоматического обновления updated_at (если ещё не существует)
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
 -- Таблица целей питания пользователя
 CREATE TABLE IF NOT EXISTS user_nutrition_targets (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

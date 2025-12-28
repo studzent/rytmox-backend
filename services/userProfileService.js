@@ -496,6 +496,12 @@ async function upsertUserProfile(userId, payload) {
       // updated_at убран - этой колонки нет в таблице users
     };
 
+    // Удаляем water_goal из payload, если он есть - он должен быть только в user_nutrition_targets
+    if (payload.water_goal !== undefined) {
+      delete payload.water_goal;
+      console.log('[upsertUserProfile] Removed water_goal from payload (should be in user_nutrition_targets)');
+    }
+
     // Добавляем только переданные поля (частичное обновление) - сохраняем в отдельные колонки
     if (payload.level !== undefined) {
       // Ensure level is never null - default to 'intermediate' if not provided or invalid
@@ -683,6 +689,20 @@ async function upsertUserProfile(userId, payload) {
     if (payload.nutrition_enabled !== undefined) {
       profileData.nutrition_enabled = Boolean(payload.nutrition_enabled);
     }
+    if (payload.main_tab_module !== undefined) {
+      // Валидация: только 'nutrition' или 'body'
+      if (payload.main_tab_module === null || payload.main_tab_module === 'nutrition' || payload.main_tab_module === 'body') {
+        profileData.main_tab_module = payload.main_tab_module;
+      } else {
+        return {
+          data: null,
+          error: {
+            message: "main_tab_module must be 'nutrition', 'body', or null",
+            code: "VALIDATION_ERROR",
+          },
+        };
+      }
+    }
     // weight_unit обрабатывается выше (строки 539-554) и сохраняется в restrictions.weightUnit
     // Не добавляем его в profileData, так как этой колонки нет в таблице users
     if (payload.current_step !== undefined) {
@@ -832,17 +852,16 @@ async function upsertUserProfile(userId, payload) {
             // Не прерываем сохранение профиля, если расчёт калорий не удался
           } else if (calorieData) {
             // Добавляем расчётные значения в profileData
+            // ВАЖНО: water_goal НЕ сохраняем в users, он должен быть в user_nutrition_targets
             profileData.bmr = calorieData.bmr;
             profileData.tdee = calorieData.tdee;
             profileData.calorie_goal = calorieData.calorie_goal;
-            if (calorieData.water_goal) {
-              profileData.water_goal = calorieData.water_goal;
-            }
-            console.log('[upsertUserProfile] Calories and water recalculated:', {
+            // water_goal убран - он сохраняется через nutritionTargetsEngine
+            console.log('[upsertUserProfile] Calories recalculated:', {
               bmr: calorieData.bmr,
               tdee: calorieData.tdee,
               calorie_goal: calorieData.calorie_goal,
-              water_goal: calorieData.water_goal,
+              // water_goal теперь в user_nutrition_targets, не в users
             });
           }
         }
@@ -903,17 +922,16 @@ async function upsertUserProfile(userId, payload) {
         if (calorieError) {
           console.warn('[upsertUserProfile] Failed to calculate calories for new user:', calorieError.message);
         } else if (calorieData) {
+          // ВАЖНО: water_goal НЕ сохраняем в users, он должен быть в user_nutrition_targets
           newUserData.bmr = calorieData.bmr;
           newUserData.tdee = calorieData.tdee;
           newUserData.calorie_goal = calorieData.calorie_goal;
-          if (calorieData.water_goal) {
-            newUserData.water_goal = calorieData.water_goal;
-          }
-          console.log('[upsertUserProfile] Calories and water calculated for new user:', {
+          // water_goal убран - он сохраняется через nutritionTargetsEngine
+          console.log('[upsertUserProfile] Calories calculated for new user:', {
             bmr: calorieData.bmr,
             tdee: calorieData.tdee,
             calorie_goal: calorieData.calorie_goal,
-            water_goal: calorieData.water_goal,
+            // water_goal теперь в user_nutrition_targets, не в users
           });
         }
       }
