@@ -721,7 +721,7 @@ async function analyzeFoodFromImage(imageBase64) {
 
 НЕ возвращай общие названия типа "блюдо" или "еда". Всегда определяй КОНКРЕТНОЕ название блюда.
 
-Возвращай ТОЛЬКО валидный JSON без дополнительного текста.`,
+Возвращай ТОЛЬКО валидный JSON объект без markdown-разметки, без \`\`\`json, без дополнительного текста.`,
           },
           {
             role: "user",
@@ -741,6 +741,7 @@ async function analyzeFoodFromImage(imageBase64) {
         ],
         temperature: 0.2,
         max_tokens: 1500, // Увеличено для более детального описания и анализа
+        response_format: { type: "json_object" }, // Принудительно возвращать валидный JSON
       });
 
       // Увеличенный таймаут для анализа изображений (90 секунд, так как анализ изображений может занимать больше времени)
@@ -790,6 +791,7 @@ async function analyzeFoodFromImage(imageBase64) {
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
+      console.error('[analyzeFoodFromImage] Empty content from AI response');
       return {
         data: null,
         error: {
@@ -799,25 +801,44 @@ async function analyzeFoodFromImage(imageBase64) {
       };
     }
 
-    // Парсим JSON из ответа (может быть обёрнут в markdown код)
+    console.log('[analyzeFoodFromImage] Raw AI response length:', content.length);
+
+    // Парсим JSON из ответа
     let parsed;
     try {
-      // Пытаемся найти JSON в ответе
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        parsed = JSON.parse(jsonMatch[0]);
-      } else {
-        parsed = JSON.parse(content);
+      // Сначала пробуем напрямую (с response_format: json_object должен быть валидный JSON)
+      parsed = JSON.parse(content);
+    } catch (directParseErr) {
+      console.log('[analyzeFoodFromImage] Direct parse failed, trying to extract JSON from content');
+      
+      try {
+        // Пробуем извлечь JSON из markdown блока ```json ... ```
+        let jsonContent = content;
+        
+        // Удаляем markdown блоки если есть
+        const markdownMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (markdownMatch) {
+          jsonContent = markdownMatch[1].trim();
+        }
+        
+        // Пробуем найти JSON объект
+        const jsonMatch = jsonContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('No JSON object found in response');
+        }
+      } catch (extractErr) {
+        console.error('[analyzeFoodFromImage] JSON parse error:', extractErr.message);
+        console.error('[analyzeFoodFromImage] Raw content (first 500 chars):', content.substring(0, 500));
+        return {
+          data: null,
+          error: {
+            message: "Failed to parse AI response",
+            code: "PARSE_ERROR",
+          },
+        };
       }
-    } catch (parseErr) {
-      console.error('[analyzeFoodFromImage] JSON parse error:', parseErr, 'Content:', content);
-      return {
-        data: null,
-        error: {
-          message: "Failed to parse AI response",
-          code: "PARSE_ERROR",
-        },
-      };
     }
 
     // Валидация и нормализация данных (без округления - округление только при сохранении в БД)
