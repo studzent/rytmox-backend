@@ -6,13 +6,32 @@ const crypto = require("crypto");
  * @param {object} params - Параметры метрики
  * @param {string} params.userId - ID пользователя (UUID)
  * @param {number} params.weightKg - Вес в килограммах
- * @param {number} [params.bodyFatPct] - Процент жира (не поддерживается в users_measurements, игнорируется)
+ * @param {number} [params.bodyFatPct] - Процент жира (опционально)
  * @param {string} [params.recordedAt] - Дата и время фиксации (ISO string, опционально, по умолчанию now())
- * @param {string} [params.notes] - Заметки (не поддерживается в users_measurements, игнорируется)
- * @param {number} [params.heightCm] - Рост в сантиметрах (не поддерживается в users_measurements, игнорируется)
+ * @param {string} [params.notes] - Заметки (опционально)
+ * @param {number} [params.heightCm] - Рост в сантиметрах (игнорируется, хранится в профиле)
+ * @param {number} [params.neckCm] - Обхват шеи в см (опционально)
+ * @param {number} [params.waistCm] - Обхват талии в см (опционально)
+ * @param {number} [params.hipsCm] - Обхват бёдер в см (опционально, для женщин)
+ * @param {number} [params.chestCm] - Обхват груди в см (опционально)
+ * @param {number} [params.bicepCm] - Обхват бицепса в см (опционально)
+ * @param {number} [params.thighCm] - Обхват бедра в см (опционально)
  * @returns {Promise<{data: object|null, error: object|null}>}
  */
-async function addBodyMetric({ userId, weightKg, bodyFatPct, recordedAt, notes, heightCm }) {
+async function addBodyMetric({ 
+  userId, 
+  weightKg, 
+  bodyFatPct, 
+  recordedAt, 
+  notes, 
+  heightCm,
+  neckCm,
+  waistCm,
+  hipsCm,
+  chestCm,
+  bicepCm,
+  thighCm,
+}) {
   try {
     if (!userId) {
       return {
@@ -37,22 +56,34 @@ async function addBodyMetric({ userId, weightKg, bodyFatPct, recordedAt, notes, 
     // Используем переданную дату или текущее время
     const measuredAtValue = recordedAt || new Date().toISOString();
 
-    // users_measurements: (id uuid, user_id uuid, measured_at timestamptz, weight_kg numeric, source text)
+    // users_measurements: поддерживает все поля включая новые замеры
     const measurementRow = {
       id: crypto.randomUUID(),
       user_id: userId,
       measured_at: measuredAtValue,
       weight_kg: weightKg,
       source: "metrics",
+      // Новые поля замеров (если они добавлены через миграцию)
+      neck_cm: neckCm || null,
+      waist_cm: waistCm || null,
+      hips_cm: hipsCm || null,
+      chest_cm: chestCm || null,
+      bicep_cm: bicepCm || null,
+      thigh_cm: thighCm || null,
     };
+    
+    // bodyFatPct и notes могут не поддерживаться в users_measurements
+    // Добавляем их только если они есть в схеме
+    if (bodyFatPct !== undefined) {
+      measurementRow.body_fat_pct = bodyFatPct;
+    }
+    if (notes !== undefined) {
+      measurementRow.notes = notes;
+    }
 
-    // Поля bodyFatPct/notes/heightCm в users_measurements не поддерживаются — логируем для отладки
-    if (bodyFatPct !== undefined || notes !== undefined || heightCm !== undefined) {
-      console.log("[userMetricsService.addBodyMetric] Ignoring unsupported fields for users_measurements:", {
-        hasBodyFatPct: bodyFatPct !== undefined,
-        hasNotes: notes !== undefined,
-        hasHeightCm: heightCm !== undefined,
-      });
+    // heightCm игнорируется, так как хранится в профиле
+    if (heightCm !== undefined) {
+      console.log("[userMetricsService.addBodyMetric] Ignoring heightCm (stored in profile)");
     }
 
     const { data: measurement, error: metricError } = await supabaseAdmin

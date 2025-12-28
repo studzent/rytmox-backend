@@ -11,7 +11,19 @@ exports.addBodyMetric = async (req, res) => {
     const userIdFromBody = req.body.userId;
     const userId = userIdFromToken || userIdFromBody;
 
-    const { weightKg, bodyFatPct, recordedAt, notes, heightCm } = req.body;
+    const { 
+      weightKg, 
+      bodyFatPct, 
+      recordedAt, 
+      notes, 
+      heightCm,
+      neckCm,
+      waistCm,
+      hipsCm,
+      chestCm,
+      bicepCm,
+      thighCm,
+    } = req.body;
 
     if (!userId) {
       return res.status(400).json({ error: "userId is required" });
@@ -30,6 +42,12 @@ exports.addBodyMetric = async (req, res) => {
       recordedAt,
       notes,
       heightCm,
+      neckCm,
+      waistCm,
+      hipsCm,
+      chestCm,
+      bicepCm,
+      thighCm,
     });
 
     if (error) {
