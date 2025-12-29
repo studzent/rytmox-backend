@@ -872,6 +872,14 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
     }
 
     let assistantText = completion.choices[0].message.content;
+    
+    // Ограничение длины ответа AI для экономии токенов (максимум 2000 символов)
+    const MAX_RESPONSE_LENGTH = 2000;
+    if (assistantText && assistantText.length > MAX_RESPONSE_LENGTH) {
+      assistantText = assistantText.substring(0, MAX_RESPONSE_LENGTH) + '...';
+      console.log(`[chatService] ⚠️ Response truncated from ${completion.choices[0].message.content.length} to ${MAX_RESPONSE_LENGTH} characters`);
+    }
+    
     let messageType = "response"; // По умолчанию обычное сообщение
 
     // Шаг 6.5: Извлечение параметров профиля из сообщения пользователя
@@ -1004,6 +1012,79 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
       // Не прерываем выполнение
     }
 
+    // Шаг 9.5: Проверка на намерение обновить профиль
+    let profileUpdateProposal = null;
+    try {
+      const profileData = context?.profileData || {};
+      console.log(`[chatService] 🔍 Checking profile update intent for message: "${text.substring(0, 50)}"`);
+      const intentResult = await detectProfileUpdateIntent(text, assistantText, profileData);
+      
+      if (intentResult) {
+        console.log(`[chatService] 📊 Intent detection result:`, {
+          changesCount: intentResult.changes?.length || 0,
+          confidence: intentResult.confidence,
+          source: intentResult.source
+        });
+      }
+      
+      if (intentResult && intentResult.changes && intentResult.changes.length > 0) {
+        // Фильтруем изменения где toValue !== fromValue
+        const validChanges = intentResult.changes.filter(change => {
+          if (Array.isArray(change.fromValue) && Array.isArray(change.toValue)) {
+            return JSON.stringify(change.fromValue.sort()) !== JSON.stringify(change.toValue.sort());
+          }
+          return change.fromValue !== change.toValue;
+        });
+
+        console.log(`[chatService] ✅ Valid changes after filtering: ${validChanges.length} out of ${intentResult.changes.length}`);
+
+        // Показываем proposal только если confidence >= medium и есть валидные изменения
+        if (validChanges.length > 0 && (intentResult.confidence === 'high' || intentResult.confidence === 'medium')) {
+          const proposalId = crypto.randomUUID();
+          const proposalText = "Сохранить изменения профиля?";
+          
+          console.log(`[chatService] 💾 Creating profile update proposal with ${validChanges.length} changes`);
+          
+          // Сохраняем proposal сообщение
+          const { data: proposalMessage, error: proposalError } = await saveAssistantMessage(
+            resolvedThreadId,
+            userId,
+            proposalText,
+            {
+              message_type: 'profile_update_proposal',
+              profile_update_changes: validChanges,
+              profile_update_proposal_id: proposalId,
+              agent_role: speaker,
+              agent_display_name: chatRouterService.AGENT_DISPLAY_NAMES[speaker] || speaker,
+            }
+          );
+
+          if (!proposalError && proposalMessage) {
+            profileUpdateProposal = {
+              id: proposalMessage.id || proposalId,
+              content: proposalText,
+              metadata: proposalMessage.metadata || {
+                message_type: 'profile_update_proposal',
+                profile_update_changes: validChanges,
+                profile_update_proposal_id: proposalId,
+              },
+              created_at: proposalMessage.created_at || new Date().toISOString(),
+            };
+            console.log(`[chatService] ✅ Created profile update proposal with ${validChanges.length} changes`);
+          } else {
+            console.error(`[chatService] ❌ Failed to save proposal message:`, proposalError);
+          }
+        } else {
+          console.log(`[chatService] ⚠️ Proposal not created: confidence=${intentResult.confidence}, validChanges=${validChanges.length}`);
+        }
+      } else {
+        console.log(`[chatService] ℹ️ No profile update intent detected`);
+      }
+    } catch (proposalError) {
+      console.error(`[chatService] ❌ Error creating profile update proposal:`, proposalError);
+      // Не прерываем выполнение, просто логируем
+    }
+
     const totalDuration = Date.now() - functionStartTime;
     console.log(`[chatService] ✅ sendChatMessage completed successfully in ${totalDuration}ms`);
 
@@ -1026,19 +1107,39 @@ async function sendChatMessage(userId, mode, text, threadId = null) {
       active_agent_name: chatRouterService.AGENT_DISPLAY_NAMES[activeAgentRole] || activeAgentRole,
     };
 
+    // Формируем ответ с основным сообщением и proposal (если есть)
+    const assistantMessages = [{
+      id: assistantMessage.id || `msg-${Date.now()}`,
+      content: assistantMessage.content || assistantText,
+      metadata: assistantMessage.metadata || metadata,
+      created_at: assistantMessage.created_at || new Date().toISOString(),
+    }];
+
+    // Добавляем proposal сообщение если есть
+    if (profileUpdateProposal) {
+      console.log(`[chatService] 📤 Adding profile update proposal to response`);
+      assistantMessages.push(profileUpdateProposal);
+    } else {
+      console.log(`[chatService] ℹ️ No profile update proposal to add`);
+    }
+
+    const responseData = {
+      threadId: resolvedThreadId,
+      assistantMessage: assistantMessages[0], // Для обратной совместимости
+      assistantMessages: assistantMessages.length > 1 ? assistantMessages : undefined, // Для multi-response
+      workout: workoutId ? { id: workoutId } : null,
+      routing: routing,
+      ui_hints: ui_hints,
+    };
+
+    console.log(`[chatService] 📦 Response data:`, {
+      hasAssistantMessage: !!responseData.assistantMessage,
+      assistantMessagesCount: responseData.assistantMessages?.length || 0,
+      hasProposal: !!profileUpdateProposal,
+    });
+
     return {
-      data: {
-        threadId: resolvedThreadId,
-        assistantMessage: {
-          id: assistantMessage.id || `msg-${Date.now()}`,
-          content: assistantMessage.content || assistantText,
-          metadata: assistantMessage.metadata || metadata,
-          created_at: assistantMessage.created_at || new Date().toISOString(),
-        },
-        workout: workoutId ? { id: workoutId } : null,
-        routing: routing,
-        ui_hints: ui_hints,
-      },
+      data: responseData,
       error: null,
     };
   } catch (err) {
@@ -1304,6 +1405,433 @@ async function cancelHandoff(userId, threadId) {
         code: "INTERNAL_ERROR",
       },
     };
+  }
+}
+
+/**
+ * Определение намерения обновить профиль из сообщения пользователя
+ * Использует комбинированный подход: rule-based для прямых запросов + AI для контекстных
+ * @param {string} userMessage - Текст сообщения пользователя
+ * @param {string} aiResponse - Текст ответа AI (опционально)
+ * @param {object} userProfile - Текущий профиль пользователя
+ * @returns {Promise<{changes: Array, confidence: string, source: string}|null>}
+ */
+async function detectProfileUpdateIntent(userMessage, aiResponse, userProfile) {
+  try {
+    if (!userMessage || typeof userMessage !== 'string' || userMessage.trim().length === 0) {
+      return null;
+    }
+
+    const lowerText = userMessage.toLowerCase().trim();
+    const changes = [];
+    let confidence = 'low';
+    let source = 'rule-based';
+
+    // ========== ЭТАП 1: Rule-based (быстрая проверка прямых запросов) ==========
+    
+    // Training days per week - поддерживаем разные варианты:
+    // "хочу 5 тренировок", "хочу тренироваться 5 дней", "сделай 5 дней в неделю", "5 тренировок"
+    const daysPatterns = [
+      /(?:хочу|сделай|поставь|установи|измени|смени|нужно|надо|мне)\s+(\d+)\s+(?:тренировок|тренировки|тренировку)/i, // "хочу 5 тренировок", "мне 5 тренировок"
+      /(?:хочу|сделай|поставь|установи|измени|смени)\s*(?:тренироваться|тренировок|тренировки)?\s*(?:на\s*)?(\d+)\s*(?:дн|раз|дня|дней)?\s*(?:в\s*неделю|в\s*неделе)?/i, // "хочу тренироваться 5 дней"
+      /(\d+)\s*(?:тренировок|тренировки|тренировку)\s*(?:в\s*неделю|в\s*неделе|на\s*неделю)/i, // "5 тренировок в неделю"
+      /(\d+)\s*(?:тренировок|тренировки)/i, // Просто "5 тренировок" (если в контексте запроса)
+    ];
+    
+    console.log(`[detectProfileUpdateIntent] Testing patterns for: "${lowerText}"`);
+    for (let i = 0; i < daysPatterns.length; i++) {
+      const pattern = daysPatterns[i];
+      const daysMatch = lowerText.match(pattern);
+      if (daysMatch) {
+        console.log(`[detectProfileUpdateIntent] ✅ Pattern ${i + 1} matched:`, daysMatch[1]);
+        const days = parseInt(daysMatch[1], 10);
+        if (days >= 1 && days <= 7) {
+          const currentDays = userProfile?.training_days_per_week || null;
+          console.log(`[detectProfileUpdateIntent] Current days: ${currentDays}, New days: ${days}`);
+          if (currentDays !== days) {
+            changes.push({
+              fieldKey: 'training_days_per_week',
+              label: 'Дни тренировок в неделю',
+              fromValue: currentDays,
+              toValue: days,
+              reason: `Пользователь хочет тренироваться ${days} ${days === 1 ? 'день' : days < 5 ? 'дня' : 'дней'} в неделю`
+            });
+            confidence = 'high';
+            console.log(`[detectProfileUpdateIntent] ✅ Added change: ${currentDays} → ${days}`);
+            break; // Нашли совпадение, выходим
+          } else {
+            console.log(`[detectProfileUpdateIntent] ⚠️ Days unchanged: ${currentDays} === ${days}`);
+          }
+        } else {
+          console.log(`[detectProfileUpdateIntent] ⚠️ Invalid days value: ${days} (must be 1-7)`);
+        }
+      }
+    }
+
+    // Experience level
+    const experiencePatterns = {
+      'never': /(?:никогда|не\s*тренировался|не\s*занимался|начинаю\s*с\s*нуля)/i,
+      'beginner': /(?:новичок|начинающий|только\s*начинаю|первый\s*раз)/i,
+      'intermediate': /(?:средний|средний\s*уровень|промежуточный)/i,
+      'advanced': /(?:продвинутый|опытный|профессионал)/i,
+      'returning': /(?:возвращаюсь|после\s*перерыва|восстанавливаю)/i
+    };
+    for (const [exp, pattern] of Object.entries(experiencePatterns)) {
+      if (pattern.test(lowerText)) {
+        const levelMap = {
+          'never': 'beginner',
+          'beginner': 'beginner',
+          'intermediate': 'intermediate',
+          'advanced': 'advanced',
+          'returning': 'intermediate'
+        };
+        const currentLevel = userProfile?.level || null;
+        const newLevel = levelMap[exp];
+        if (currentLevel !== newLevel) {
+          changes.push({
+            fieldKey: 'level',
+            label: 'Опыт тренировок',
+            fromValue: currentLevel,
+            toValue: newLevel,
+            reason: `Пользователь указал уровень: ${exp}`
+          });
+          confidence = 'high';
+        }
+        break;
+      }
+    }
+
+    // Body focus zones
+    const bodyFocusPatterns = {
+      'core_abs': /(?:пресс|кор|живот|абдоминальные)/i,
+      'glutes': /(?:ягодицы|попа)/i,
+      'legs': /(?:ноги|бедра|квадрицепс)/i,
+      'arms': /(?:руки|бицепс|трицепс)/i,
+      'back_posture': /(?:спина|осанка|поясница)/i,
+      'endurance': /(?:выносливость|кардио)/i
+    };
+    for (const [focus, pattern] of Object.entries(bodyFocusPatterns)) {
+      if (/(?:фокус|хочу|качать|тренировать|работать)\s*(?:на|над)?/.test(lowerText) && pattern.test(lowerText)) {
+        const currentFocus = userProfile?.body_focus_zones || [];
+        if (!currentFocus.includes(focus)) {
+          changes.push({
+            fieldKey: 'body_focus_zones',
+            label: 'Фокус на теле',
+            fromValue: currentFocus,
+            toValue: [...currentFocus, focus],
+            reason: `Пользователь хочет добавить фокус на ${focus}`
+          });
+          confidence = confidence === 'low' ? 'medium' : confidence;
+        }
+        break;
+      }
+    }
+
+    // Goals
+    const goalPatterns = {
+      'weight_loss': /(?:похудение|похудеть|сбросить\s*вес|сжигание\s*жира)/i,
+      'muscle_gain': /(?:набор\s*массы|набрать\s*массу|нарастить\s*мышцы)/i,
+      'strength_training': /(?:силовые|сила|стать\s*сильнее|силовой)/i,
+      'energy': /(?:энергия|бодрость)/i,
+      'health': /(?:здоровье|здоровый)/i,
+      'flexibility': /(?:гибкость|растяжка)/i,
+      'stress_relief': /(?:снятие\s*стресса|расслабление)/i
+    };
+    const foundGoals = [];
+    for (const [goal, pattern] of Object.entries(goalPatterns)) {
+      if (pattern.test(lowerText)) {
+        foundGoals.push(goal);
+      }
+    }
+    if (foundGoals.length > 0) {
+      const currentGoals = userProfile?.goals || [];
+      const newGoals = [...new Set([...currentGoals, ...foundGoals])];
+      if (JSON.stringify(currentGoals.sort()) !== JSON.stringify(newGoals.sort())) {
+        changes.push({
+          fieldKey: 'goals',
+          label: 'Цели тренировок',
+          fromValue: currentGoals,
+          toValue: newGoals,
+          reason: `Пользователь хочет добавить цели: ${foundGoals.join(', ')}`
+        });
+        confidence = confidence === 'low' ? 'medium' : confidence;
+      }
+    }
+
+    // Activity level
+    const activityPatterns = {
+      'sedentary': /(?:сидячий|мало\s*двигаюсь|сидячая\s*работа|сидячий\s*образ\s*жизни)/i,
+      'light': /(?:лёгкая|немного\s*активности|1-3\s*тренировки|лёгкая\s*активность)/i,
+      'moderate': /(?:умеренная|средняя|3-5\s*тренировок|умеренная\s*активность)/i,
+      'high': /(?:высокая|много\s*активности|6-7\s*тренировок|высокая\s*активность)/i,
+      'very_high': /(?:очень\s*высокая|очень\s*много|2\s*раза\s*в\s*день|очень\s*высокая\s*активность)/i
+    };
+    for (const [activity, pattern] of Object.entries(activityPatterns)) {
+      if (pattern.test(lowerText)) {
+        const currentActivity = userProfile?.activity_level || null;
+        if (currentActivity !== activity) {
+          changes.push({
+            fieldKey: 'activity_level',
+            label: 'Уровень активности',
+            fromValue: currentActivity,
+            toValue: activity,
+            reason: `Пользователь указал уровень активности: ${activity}`
+          });
+          confidence = 'high';
+        }
+        break;
+      }
+    }
+
+    // Special programs
+    const specialProgramPatterns = {
+      'back_relief': /(?:ослабление\s*спины|болит\s*спина|проблемы\s*со\s*спиной|здоровая\s*спина)/i,
+      'healthy_joints': /(?:здоровые\s*суставы|суставы|проблемы\s*с\s*суставами)/i,
+      'core_tone': /(?:тонус\s*пресса|пресс|кор)/i,
+      'rehabilitation': /(?:восстановление\s*после\s*травмы|реабилитация|после\s*травмы)/i,
+      'mobility': /(?:мобильность|гибкость|растяжка|подвижность)/i,
+      'postpartum': /(?:после\s*беременности|послеродовое|после\s*родов)/i
+    };
+    const foundPrograms = [];
+    for (const [program, pattern] of Object.entries(specialProgramPatterns)) {
+      if (pattern.test(lowerText)) {
+        foundPrograms.push(program);
+      }
+    }
+    if (foundPrograms.length > 0) {
+      const currentPrograms = userProfile?.restrictions?.specialPrograms || [];
+      const newPrograms = [...new Set([...currentPrograms, ...foundPrograms])];
+      if (JSON.stringify(currentPrograms.sort()) !== JSON.stringify(newPrograms.sort())) {
+        changes.push({
+          fieldKey: 'special_programs',
+          label: 'Специальные программы',
+          fromValue: currentPrograms,
+          toValue: newPrograms,
+          reason: `Пользователь хочет добавить программы: ${foundPrograms.join(', ')}`
+        });
+        confidence = confidence === 'low' ? 'medium' : confidence;
+      }
+    }
+
+    // Contraindications
+    const contraindicationPatterns = {
+      'lower_back': /(?:болит\s*поясница|поясница|боль\s*в\s*пояснице|нижняя\s*спина)/i,
+      'neck': /(?:болит\s*шея|шея|боль\s*в\s*шее)/i,
+      'knees': /(?:болит\s*колени|колени|боль\s*в\s*коленях|колено)/i,
+      'shoulders': /(?:болит\s*плечи|плечи|боль\s*в\s*плечах|плечо)/i,
+      'elbows_wrists': /(?:болит\s*локти|локти|запястья|боль\s*в\s*локтях|боль\s*в\s*запястьях)/i,
+      'ankles': /(?:болит\s*голеностоп|голеностоп|боль\s*в\s*голеностопе|лодыжки)/i,
+      'shortness_of_breath': /(?:задыхаюсь|одышка|быстро\s*задыхаюсь|нехватка\s*воздуха)/i,
+      'high_heart_rate': /(?:высокий\s*пульс|пульс|учащённый\s*пульс)/i,
+      'dizziness_during_exercise': /(?:головокружение|кружится\s*голова)/i,
+      'high_blood_pressure': /(?:высокое\s*давление|давление|гипертония)/i,
+      'chronic_fatigue': /(?:хроническая\s*усталость|постоянная\s*усталость)/i,
+      'poor_sleep': /(?:плохой\s*сон|недосып|проблемы\s*со\s*сном)/i,
+      'high_stress': /(?:высокий\s*стресс|стресс|тревога|напряжение)/i,
+      'low_energy': /(?:низкая\s*энергия|нет\s*сил|усталость)/i
+    };
+    const foundContraindications = [];
+    for (const [contraindication, pattern] of Object.entries(contraindicationPatterns)) {
+      if (pattern.test(lowerText)) {
+        foundContraindications.push(contraindication);
+      }
+    }
+    if (foundContraindications.length > 0) {
+      const currentContraindications = Object.keys(userProfile?.contraindications || {}).filter(
+        k => userProfile.contraindications[k] === true
+      ) || [];
+      const newContraindications = [...new Set([...currentContraindications, ...foundContraindications])];
+      if (JSON.stringify(currentContraindications.sort()) !== JSON.stringify(newContraindications.sort())) {
+        changes.push({
+          fieldKey: 'contraindications',
+          label: 'Противопоказания',
+          fromValue: currentContraindications,
+          toValue: newContraindications,
+          reason: `Пользователь указал противопоказания: ${foundContraindications.join(', ')}`
+        });
+        confidence = confidence === 'low' ? 'medium' : confidence;
+      }
+    }
+
+    // Emphasized muscles (акцентированные мышцы)
+    const musclePatterns = {
+      'chest': /(?:грудные|грудь|пекторальные)/i,
+      'lats': /(?:широчайшие|спина|широчайшие\s*мышцы)/i,
+      'traps': /(?:трапеции|трапеция)/i,
+      'deltoids_front': /(?:передние\s*дельты|передняя\s*дельтовидная)/i,
+      'deltoids_side': /(?:средние\s*дельты|средняя\s*дельтовидная)/i,
+      'deltoids_rear': /(?:задние\s*дельты|задняя\s*дельтовидная)/i,
+      'biceps': /(?:бицепс|бицепсы)/i,
+      'triceps': /(?:трицепс|трицепсы)/i,
+      'forearms': /(?:предплечья|предплечье)/i,
+      'abs': /(?:прямая\s*мышца\s*живота|пресс)/i,
+      'obliques': /(?:косые\s*мышцы|косые)/i,
+      'deep_core': /(?:глубокий\s*кор|глубокие\s*мышцы\s*кора)/i,
+      'glutes': /(?:ягодичные|ягодицы)/i,
+      'quads': /(?:квадрицепсы|квадрицепс|передняя\s*поверхность\s*бедра)/i,
+      'hamstrings': /(?:бицепс\s*бедра|задняя\s*поверхность\s*бедра)/i,
+      'adductors': /(?:приводящие|внутренняя\s*поверхность\s*бедра)/i,
+      'calves': /(?:икры|голень)/i
+    };
+    const foundMuscles = [];
+    for (const [muscle, pattern] of Object.entries(musclePatterns)) {
+      if (/(?:акцент|фокус|хочу|качать|тренировать|работать)\s*(?:на|над)?/.test(lowerText) && pattern.test(lowerText)) {
+        foundMuscles.push(muscle);
+      }
+    }
+    if (foundMuscles.length > 0) {
+      const currentMuscles = userProfile?.emphasized_muscles || [];
+      const newMuscles = [...new Set([...currentMuscles, ...foundMuscles])];
+      // Ограничиваем до MAX_MUSCLES (4)
+      const limitedMuscles = newMuscles.slice(0, 4);
+      if (JSON.stringify(currentMuscles.sort()) !== JSON.stringify(limitedMuscles.sort())) {
+        changes.push({
+          fieldKey: 'emphasized_muscles',
+          label: 'Акцентированные мышцы',
+          fromValue: currentMuscles,
+          toValue: limitedMuscles,
+          reason: `Пользователь хочет добавить акцент на мышцы: ${foundMuscles.join(', ')}`
+        });
+        confidence = confidence === 'low' ? 'medium' : confidence;
+      }
+    }
+
+    // Если rule-based дал результат с высокой уверенностью, возвращаем
+    if (changes.length > 0 && confidence === 'high') {
+      return { changes, confidence, source: 'rule-based' };
+    }
+
+    // ========== ЭТАП 2: AI-анализ (для контекстных запросов) ==========
+    
+    // Если rule-based не дал результата или confidence низкий, используем AI
+    if (changes.length === 0 || confidence === 'low') {
+      try {
+        const currentProfile = {
+          training_days_per_week: userProfile?.training_days_per_week || null,
+          level: userProfile?.level || null,
+          goals: userProfile?.goals || [],
+          body_focus_zones: userProfile?.body_focus_zones || [],
+          emphasized_muscles: userProfile?.emphasized_muscles || [],
+          activity_level: userProfile?.activity_level || null,
+          special_programs: userProfile?.restrictions?.specialPrograms || [],
+          contraindications: Object.keys(userProfile?.contraindications || {}).filter(k => userProfile.contraindications[k] === true) || []
+        };
+
+        const prompt = `Ты - AI-ассистент в фитнес-приложении. Проанализируй сообщение пользователя и ответ AI, чтобы определить, хочет ли пользователь изменить настройки своего профиля тренировок.
+
+ТЕКУЩИЕ НАСТРОЙКИ ПРОФИЛЯ:
+- Дни тренировок в неделю: ${currentProfile.training_days_per_week || 'не указано'}
+- Уровень опыта: ${currentProfile.level || 'не указано'} (beginner/intermediate/advanced)
+- Цели: ${currentProfile.goals.join(', ') || 'не указано'} (weight_loss, muscle_gain, strength_training, energy, health, flexibility, stress_relief)
+- Фокус на теле: ${currentProfile.body_focus_zones.join(', ') || 'не указано'} (core_abs, glutes, legs, arms, back_posture, endurance)
+- Акцентированные мышцы: ${currentProfile.emphasized_muscles.join(', ') || 'не указано'} (chest, lats, traps, deltoids_front/side/rear, biceps, triceps, forearms, abs, obliques, deep_core, glutes, quads, hamstrings, adductors, calves)
+- Уровень активности: ${currentProfile.activity_level || 'не указано'} (sedentary, light, moderate, high, very_high)
+- Специальные программы: ${currentProfile.special_programs.join(', ') || 'не указано'} (back_relief, healthy_joints, core_tone, rehabilitation, mobility, postpartum)
+- Противопоказания: ${currentProfile.contraindications.join(', ') || 'нет'} (lower_back, neck, knees, shoulders, elbows_wrists, ankles, shortness_of_breath, high_heart_rate, dizziness_during_exercise, high_blood_pressure, chronic_fatigue, poor_sleep, high_stress, low_energy)
+
+СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ: "${userMessage}"
+${aiResponse ? `ОТВЕТ AI: "${aiResponse.substring(0, 500)}"` : ''}
+
+Если пользователь хочет изменить настройки, верни ТОЛЬКО валидный JSON:
+
+{
+  "changes": [
+    {
+      "fieldKey": "training_days_per_week|level|goals|body_focus_zones|emphasized_muscles|activity_level|special_programs|contraindications",
+      "label": "Человекочитаемое название поля",
+      "fromValue": текущее значение,
+      "toValue": новое значение,
+      "reason": "Почему это изменение предложено"
+    }
+  ],
+  "confidence": "high|medium|low"
+}
+
+ПРАВИЛА РАСПОЗНАВАНИЯ:
+1. Дни тренировок: "больше тренировок" = увеличить на 1-2, "чаще" = увеличить дни, "меньше" = уменьшить
+   - Если сейчас 3 дня и "больше" → 4-5 дней
+   - Если сейчас 5 дней и "меньше" → 3-4 дня
+
+2. Уровень опыта: "новичок" → beginner, "средний" → intermediate, "продвинутый" → advanced
+
+3. Цели: "похудеть" → weight_loss, "набрать массу" → muscle_gain, "сила" → strength_training, "энергия" → energy, "здоровье" → health, "гибкость" → flexibility, "снятие стресса" → stress_relief
+   - Добавляй к существующим, не заменяй (максимум 2 цели)
+
+4. Фокус на теле: "фокус на пресс" → core_abs, "на руки" → arms, "на ноги" → legs, "на спину" → back_posture, "на ягодицы" → glutes, "выносливость" → endurance
+   - Добавляй к существующим (максимум 3)
+
+5. Акцентированные мышцы: "акцент на бицепс" → biceps, "на трицепс" → triceps, "на грудь" → chest, "на плечи" → deltoids_front/side/rear, "на квадрицепс" → quads
+   - Добавляй к существующим (максимум 4)
+
+6. Уровень активности: "сидячий" → sedentary, "лёгкая" → light, "умеренная" → moderate, "высокая" → high, "очень высокая" → very_high
+
+7. Специальные программы: "мобильность" → mobility, "гибкость" → mobility, "спина" → back_relief, "суставы" → healthy_joints, "пресс" → core_tone, "реабилитация" → rehabilitation
+
+8. Противопоказания: "болит поясница" → lower_back, "болит колено" → knees, "болит шея" → neck, "одышка" → shortness_of_breath, "высокий пульс" → high_heart_rate, "головокружение" → dizziness_during_exercise
+
+ВАЖНО:
+- Понимай относительные изменения ("больше", "чаще", "меньше")
+- НЕ предлагай изменения, если новое значение совпадает с текущим
+- Для массивов добавляй к существующим, не заменяй (с учетом лимитов)
+- Если намерение неясно → верни: {"changes": [], "confidence": "low"}
+
+Верни ТОЛЬКО JSON без дополнительного текста.`;
+
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: "Ты - AI-ассистент. Анализируешь намерения пользователя об изменении настроек профиля и возвращаешь только валидный JSON."
+            },
+            {
+              role: "user",
+              content: prompt
+            }
+          ],
+          temperature: 0.3,
+          response_format: { type: "json_object" }
+        });
+
+        const content = response.choices[0]?.message?.content;
+        if (content) {
+          const parsed = JSON.parse(content);
+          if (parsed.changes && Array.isArray(parsed.changes) && parsed.changes.length > 0) {
+            // Фильтруем изменения где toValue !== fromValue
+            const validChanges = parsed.changes.filter(change => {
+              if (Array.isArray(change.fromValue) && Array.isArray(change.toValue)) {
+                return JSON.stringify(change.fromValue.sort()) !== JSON.stringify(change.toValue.sort());
+              }
+              return change.fromValue !== change.toValue;
+            });
+
+            if (validChanges.length > 0) {
+              return {
+                changes: validChanges,
+                confidence: parsed.confidence || 'medium',
+                source: 'ai-analysis'
+              };
+            }
+          }
+        }
+      } catch (aiError) {
+        console.warn('[detectProfileUpdateIntent] AI analysis failed:', aiError.message);
+        // Если AI анализ не удался, возвращаем rule-based результат если есть
+        if (changes.length > 0) {
+          return { changes, confidence: 'medium', source: 'rule-based' };
+        }
+      }
+    }
+
+    // Если есть изменения от rule-based, возвращаем их
+    if (changes.length > 0) {
+      return { changes, confidence, source: 'rule-based' };
+    }
+
+    return null;
+  } catch (err) {
+    console.error('[detectProfileUpdateIntent] Error:', err);
+    return null;
   }
 }
 
